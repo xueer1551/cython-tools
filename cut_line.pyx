@@ -1,11 +1,15 @@
 from cpython.unicode cimport Py_UCS1, Py_UCS2, PyUnicode_1BYTE_DATA, PyUnicode_2BYTE_DATA, PyUnicode_4BYTE_DATA, PyUnicode_KIND, PyUnicode_Substring
 from libc.string cimport memset
+cdef int k
+
 cdef fused pyucs:
     Py_UCS1
     Py_UCS2
     Py_UCS4
+
 ctypedef unsigned int uint
-cpdef cut_line(unicode text):
+
+def cut_line(unicode text) ->list[tuple[str, int, int, int]]:
     cdef :
         uint k=PyUnicode_KIND (text)
         pyucs t
@@ -16,24 +20,24 @@ cpdef cut_line(unicode text):
     else:
         return _cut_line(text, PyUnicode_4BYTE_DATA(text), len(text))
 
-cpdef cut_douhao(unicode text):
+def cut_douhao_and_strip(unicode text) ->list[str]:
     cdef:
         uint k = PyUnicode_KIND(text)
         pyucs t
     if k == 2:
-        return _cut_douhao(text, PyUnicode_2BYTE_DATA(text), len(text))
+        return _cut_douhao_and_strip(text, PyUnicode_2BYTE_DATA(text), len(text))
     elif k == 1:
-        return _cut_douhao(text, PyUnicode_1BYTE_DATA(text), len(text))
+        return _cut_douhao_and_strip(text, PyUnicode_1BYTE_DATA(text), len(text))
     else:
-        return _cut_douhao(text, PyUnicode_4BYTE_DATA(text), len(text))
+        return _cut_douhao_and_strip(text, PyUnicode_4BYTE_DATA(text), len(text))
 
 cdef :
     uint normal=0, kuohao=1, string=2, string3=3
     Py_UCS4 left_kuohao0=c'(', left_kuohao1=c'[', left_kuohao2=c'{', right_kuohao0=c')', right_kuohao1=c']', right_kuohao2=c'}', dyh=c"'", \
-        syh=c'"', xhx=c'\\', hh=c'\n', kongge=c' ', tab=c'\t', kongbai0=c'\r',kongbai1=c'\v', kongbai2=c'\f', fenhao=c';', douhao=c','
+        syh=c'"', xhx=c'\\', hh=c'\n', kongge=c' ', tab=c'\t', kongbai0=c'\r', fenhao=c';', douhao=c','
     Py_UCS4[255] sp_chars
 #print(PyUnicode_Substring('aaa',0,0), '---')
-cdef init_sp_chars():
+cdef  init_sp_chars():
     memset(sp_chars, 0, sizeof(Py_UCS4)*255)
     sp_chars[left_kuohao0]=1
     sp_chars[left_kuohao1]=1
@@ -48,43 +52,63 @@ cdef init_sp_chars():
     sp_chars[hh]=5
     sp_chars[kongge]=4
     sp_chars[kongbai0]=4
-    sp_chars[kongbai1]=4
-    sp_chars[kongbai2]=4
     sp_chars[tab]=tab
     sp_chars[fenhao]=fenhao
 init_sp_chars()
 assert left_kuohao2>left_kuohao1>left_kuohao0
 assert right_kuohao0<right_kuohao1<right_kuohao2
 
-cdef _cut_douhao(unicode text, pyucs* t, uint l, ):
+cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
     cdef :
-        uint _=0, i=0, start=0
+        uint _=0, i=0, start=0, end
         list ll=[]
-    while (i < l): # \s*
+    while (i < l):
+        #跳过一段连续空白
         i=find_kongbai(t,i,l)
-        #
-        c = t[i]
-        if c != left_kuohao0 and c != left_kuohao1 and c != left_kuohao2:
-            pass
+        start=i
+        # i是第一个空白字符的位置
+        while(i<l):
+            c = t[i]
+            if c != left_kuohao0 and c != left_kuohao1 and c != left_kuohao2:
+                pass
+            else:
+                i = find_kuohao(t, i + 1, l, &_)
+                continue
+            #
+            if c != dyh and c != syh:
+                pass
+            else:
+                i = find_yh_str(t, i + 1, l, c, &_)
+                continue
+            #
+            if c!=douhao:
+                pass
+            else: #遇见逗号，提取两个逗号中间的文本，i是逗号的位置
+                end=trace_find_no_kongbai(t, i)
+                s=PyUnicode_Substring(text, start, end)
+                ll.append(s)
+                start=i+1
+                break
+            i+=1
+    #把最后一个逗号到最后一个字符之间的文本给提取
+    s = PyUnicode_Substring(text, start, l)
+    ll.append(s)
+    return ll
+
+cdef uint trace_find_no_kongbai(pyucs* t, uint i,):
+    cdef:
+        pyucs c
+    while(i>0):
+        c=t[i]
+        if c == kongge or c == tab or c == kongbai0:
+            i-=1
         else:
-            i = find_kuohao(t, i + 1, l, &_)
-            continue
-        #
-        if c != dyh and c != syh:
-            pass
-        else:
-            i = find_yh_str(t, i + 1, l, c, &_)
-            continue
-        #
-        if c!=douhao:
-            pass
-        else:
-            s=PyUnicode_Substring(text, start, i)
-            ll.append(s)
-            start=i+1
-        i+=1
-    if
-    return l
+            return i
+    c = t[0]
+    if c == kongge or c == tab or c == kongbai0:
+        raise AssertionError
+    else:
+        return 0
 
 cdef uint find_kongbai(pyucs* t, uint i,  uint l, ):
     cdef pyucs c
@@ -95,6 +119,7 @@ cdef uint find_kongbai(pyucs* t, uint i,  uint l, ):
             continue
         else:
             return i
+
 cdef list _cut_line(unicode text, pyucs* t, uint l):
     cdef:
         uint i=0, start=0, ii, suojin=0,  line_text=1
@@ -142,32 +167,19 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
         i+=1
     return ll
 
-
 cdef bint want_hh(pyucs* t, uint i, uint l):
     cdef uint c, ii
     while(0<i):
         c=t[i]
-        #if c==kongge or c==tab or c==kongbai0 or c==kongbai1 or c==kongbai2
-        if c<255:
-            pass
-        else:
-            return True
-        #
-        if sp_chars[c]==4:
+        if c==kongge or c==tab or c==kongbai0:
             i-=1
         elif c==xhx:
             return False
         else:
             return True
-    if c < 255:
-        pass
-    else:
-        return True
     #
     c = t[0]
-    if sp_chars[c] == 4:
-        return True
-    elif c == xhx:
+    if c == xhx:
         return False
     else:
         return True
