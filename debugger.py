@@ -129,7 +129,7 @@ if __name__ == '__main__':
     text=open_utf8(p).read()
     #it=cfunc.finditer(text)
     code_lines=cut_line.cut_line(text)
-    print('\n-----'.join(code_lines))
+    pass
     #find_line(code_lines)
 
 # 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
