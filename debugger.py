@@ -1,10 +1,12 @@
 import re
-
+import pyximport
+pyximport.install(language_level=3)
+import cut_line
 import warnings
 # 忽略所有的 SyntaxWarning 警告
 warnings.filterwarnings('ignore', category=SyntaxWarning)
 
-sj_re=re.compile('(?=\n)\s+')
+sj_re=re.compile(r'(?=\n)\s+')
 
 变量名='\s*[_\w][_\w\d]*'
 变量名s=f'{变量名}(\s*,)?'
@@ -39,10 +41,15 @@ def find_sj_from_lines(lines):
 
 
 
-multi_line_str="[rFfbu]{0,2}'''.*?\n.*?'''"
-signal_line_str='[rFfbu]{0,2}"[^"]+"|[rFfbu]{0,2}\'[^\']+\''
+multi_line_str=r"[rFfbu]{0,2}'''.*?\n.*?'''"
+signal_line_str=r'[rRFfbBuUCc]{0,2}"[^"]+"|[rFfbu]{0,2}\'[^\']+\''
 #multi_line_content='\[[^\[\]]*?\n[^\[\]]*?\]|\([^()]*?\n[^()]*\)|{[^{}]*?\n[^{}]*}|\\\s*\n'
-multi_line_content='\[[^\[\]]*?\]|\([^()]*?\)|{[^{}]*?\n}|\\\s*\n'
+kh_left='[\[\({]'
+kh_right='[\])}]'
+kh_no_right='[^\])}]'
+kh_sigal=r'[\[({][^\])}]*[\])}]'
+kh_multi=rf'({kh_left})(({kh_no_right})*{kh_left}))*(.*?{kh_right})'
+multi_line_content=r'\[[^\[\]]*?\]|\([^()]*?\)|{[^{}]*?\n}|\\\s*\n'
 multi_line_re=re.compile(multi_line_content)
 split='|'.join([multi_line_str, signal_line_str, multi_line_content])
 first=f'({split})'
@@ -72,20 +79,57 @@ def split_code_lines(text: str) ->list[list[str]]:
         s=t.end()
     print(code_lines)
     return code_lines
-coden='[\w\d_]+'
 
-cfunc=f'\s+((inline|volatile|const|unsigned)\s*)*\s+{coden}\s+{coden}'
-type_or_var=f'{coden}\s*\**)?\s*{coden}'
-type_and_vars=f'{coden}\s+({coden})'
-func_arg=f'\(((\s*{coden}\s*\**)?\s*{coden}\s*,? )*\)'
-func_arg_re=re.compile(func_arg)
-def check_type_names(code_lines: list[list[str]]):
+coden='[\w_][\w\d_]+'
+space_and_first_word_and_other=re.compile(r'(\s*)([\w_][\w\d_]+(?=\s+))?(.+)')
+func=f'(\S+\s+)*({coden})\(.+?\)'
+cfunc=re.compile(f'(\s+inline)?((\s+(volatile|const|unsigned)){0,3}\s+{coden})\s+{coden}')
+
+from_cimport=re.compile(r'\s+(\S+)\s+cimport(.+)', re.DOTALL)
+cimport=re.compile(r'\s+(.+)', re.DOTALL)
+cdef_block=re.compile(r'\s+(public|private|readonly)?\s+:')
+struct_union_fused='struct|union|fused'
+extend_from=re.compile(r'extend\s+from.+?:')
+def find_line(code_lines: list[list[str]]):
+    for code_line in code_lines:
+        cl=''.join(code_line)
+        sfo=space_and_first_word_and_other.match(cl)
+        if sfo:
+            sj, word, other = sfo.groups()
+            identify_first_word(word, other)
+            #print(sfo.groups())
+        else:
+            assert cl==''
+from_='from'
+cimport_='cimport'
+cdef_='cdef'
+cpdef_='cpdef'
+def_='def'
+include_='include'
+
+def identify_first_word(word, other):
+    if word==cdef_:
+        print(word,other)
+    elif word==cpdef_:
+        print(word,other)
+    elif word==def_:
+        print(word,other)
+    elif word==cimport:
+        print(word,other)
+    elif word==from_:
+        print(word,other)
+    elif word==include_:
+        print(word, other)
+fkh='\[.+?\]'
+def split_func_args(args_text: str):
     pass
 
 if __name__ == '__main__':
     p='D:/xrdb/PyUnicode.pyx'
     text=open_utf8(p).read()
-    it=func_arg_re.finditer(text)
-    print(list(it))
-    #split_code_lines()
+    #it=cfunc.finditer(text)
+    code_lines=cut_line.cut_line(text)
+    print('\n-----'.join(code_lines))
+    #find_line(code_lines)
+
 # 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
