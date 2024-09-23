@@ -187,11 +187,12 @@ cdef bint want_hh(pyucs* t, uint i, uint l):
 cdef uint find_suojin(pyucs* t, uint i, uint l):
     cdef :
         pyucs c, start_char
-        uint count=0
+        uint count
     c=t[i]
     if c==kongge or c==tab:
         start_char=c
-        i-=1
+        count=1
+        i+=1
         while (i < l):
             if t[i] == start_char:
                 count += 1
