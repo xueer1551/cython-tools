@@ -1,7 +1,7 @@
 import re, sys, os
 import pyximport
 pyximport.install(language_level=3)
-import cut_line
+import cut
 import warnings
 # 忽略所有的 SyntaxWarning 警告
 warnings.filterwarnings('ignore', category=SyntaxWarning)
@@ -42,6 +42,10 @@ extend_no_used=re.compile('(?:[#@\'"\n])')
 extend_keyword=re.compile('(ctypedef|cdef)')
 all_kongbai=re.compile(r'(?:\s+)')
 left_value_express=re.compile(r'(.+)\s*[+\-*/:=]?=', re.DOTALL)
+memoryview_=re.compile('\[[^:]*:[^\]]*\]', re.DOTALL)
+shuzu=re.compile('\[\s*([0-9]*)\s*\]',re.DOTALL)
+name_=re.compile('[_\w]+',re.DOTALL)
+fanxing=re.compile('\[.+\]',re.DOTALL)
 #
 model_enter_block_keywords=set(['cdef','cpdef','def'])
 class_keywords=set(['class', 'cppclass'])
@@ -58,6 +62,106 @@ _global='global'
 _class='class'
 _cppclass='cppclass'
 _ctypedef='ctypedef'
+_volatile='volatile'
+_const='const'
+_as='as'
+_maohao=':'
+_array='array'
+_memoryview='memoryview'
+class Ctype:
+    __slots__ = ( 'base_type_name', 'modifiers', 'ptr_levels')  # 指针和数组都被视为ptr_level，只不过指针是运行期变长
+    def __init__(self, base_type_name:tuple, modifier, ptr_level: list, ):
+        self.base_type_name, self.modifiers, self.ptr_levels, self.belong_model_name = base_type_name, modifier, ptr_level
+    def __hash__(self):
+        return hash(self.name)
+
+class CClass:
+    __slots__ = ('name', 'type', 'base_type' )
+    def __init__(self, name:str, type:str, base_type):
+        #base_type当type是memoryview时才有效
+        #type -> class or memoryview or cppclass
+        self.name, self.type, self.base_type= name, type, base_type
+
+
+def get_struct_union_enum_fused_class_type_and_name(rr: re.Match, d: dict):
+    g=rr.groups()
+    t, name = g
+    d[name]=type
+
+def get_func_signature(rr: re.Match, d):
+    pass
+def get_import_with_for_vars_biemings(content: str, d) ->list[str]:
+    codens=cut.cut_douhao_and_strip(content)
+    for coden in codens:
+        tokens=cut.cut_kongbai(coden)
+        if len(tokens)==1:
+            name=tokens[0]
+            d[name]=name
+        else:
+            assert len(tokens)==3
+            assert tokens[1]==_as
+            name, bieming= tokens[0], tokens[2]
+            d[bieming]=name
+    return d
+
+
+
+def get_ctypedef_type_bieming(rr: re.Match, d: dict):
+    content=rr.groups()
+    codens_and_fangkuohaos = cut.split_by_fangkuohao_and_del_kongbai(content)
+
+
+def get_type_or_name(codens: list):
+    t, i = find_type_and_other_in_text(codens)
+
+
+def get_type_from_codens_and_fangkuohao(codens: list, fangkuohao):
+    text, stat=fangkuohao
+    if stat is cut.arr:
+        modifiers, start_i=get_const_volatile(codens)
+        l=len(codens)
+        benming=[]
+        for i in range(start_i, l):
+            c=codens[i]
+            if type(c) is str:
+                benming.append(c)
+            elif type(c) is tuple:
+                text, xinghao_count= c
+                ptr_level=[None]*xinghao_count
+                while(i<l):
+                    if type(c) is tuple:
+                        text, xinghao_count = c
+                        ptr_level = [None] * xinghao_count
+                        i+=1
+                    else:
+                        raise AssertionError
+                return Ctype(benming, modifiers, ptr_level)
+            else:
+                raise AssertionError
+        return Ctype(benming, modifiers, [])
+    elif stat is cut.typed_memoryview:
+        name=tuple(codens)
+        t=CClass(name, stat, text)
+    elif stat is cut.cppclass:
+        name=tuple(codens)
+        t=CClass(name, stat, text)
+    else:
+        raise AssertionError
+
+def get_const_volatile(codens:str, ):
+    coden=codens[0]
+    if coden==_const:
+        if codens[1]==_volatile:
+            return (_const,_volatile), 2
+        else:
+            return (_const,None), 1
+    elif coden==_volatile:
+        if codens[1]==_const:
+            return (_const,_volatile), 2
+        else:
+            return (None, _volatile), 1
+    else:
+        return (None, None), 0
 
 def break_block(code_lines:list, sj_len:int, start_i:int, l:int, ):
     for i in range(start_i,l):
@@ -77,9 +181,11 @@ class NameSpace:
         self.children=[]
         self.type=t
 
+
 def enter_model_namespace(name: str, code_lines: list ):
     namespace=NameSpace('model', name, [], 0, None, 0)
     unknows=[]
+    funcs, types, vars, includes=[],[],[],[]
     i, l =0, len(code_lines)
     lines=[None]*l
     while(i<l):
@@ -89,45 +195,45 @@ def enter_model_namespace(name: str, code_lines: list ):
         r=need_keywords.match(code_line)
         if r:
             keyword=r.groups()[0]
-            if keyword==_def or keyword==_cpdef or keyword==_async:
+            if keyword==_def or keyword==_cpdef :
+                rr=cdef_func.match(code_line)
                 lines[i] = (line, rr, namespace)
                 i=enter_func_namespace(None, namespace, code_lines, suojin_len, i, l, lines )
                 continue
             elif keyword==_cdef:
-                rr=cdef_block.match(code_line)
+                rr = cdef_block.match(code_line)
                 if rr:
                     lines[i] = (line, rr, namespace)
-                    i=enter_cdef_block_vars(namespace, code_lines, suojin_len, i, l, lines)
+                    i = enter_cdef_block_vars(namespace, code_lines, suojin_len, i, l, lines)
                     continue
                 #
-                rr=struct_union_enum_fused_class.match(code_line)
+                rr = struct_union_enum_fused_class.match(code_line)
                 if rr:
                     lines[i] = (line, rr, namespace)
-                    keyword=rr.groups()[0]
-                    if keyword==_class or keyword==_cppclass:
-                        i=enter_cdef_class_namespace(None, code_lines, suojin_len, namespace, i, l, lines)
+                    keyword = rr.groups()[0]
+                    if keyword == _class or keyword == _cppclass:
+                        i = enter_cdef_class_namespace(None, code_lines, suojin_len, namespace, i, l, lines)
                     else:
-                        i=enter_cdef_block_vars(namespace, code_lines, suojin_len, i, l, lines)
+                        i = enter_cdef_block_vars(namespace, code_lines, suojin_len, i, l, lines)
                     continue
                 #
-                rr=cdef_func.match(code_line)
+                rr = cdef_func.match(code_line)
                 if rr:
                     lines[i] = (line, rr, namespace)
-                    i=enter_func_namespace(None, namespace, code_lines, suojin_len, i, l, lines )
+                    i = enter_func_namespace(None, namespace, code_lines, suojin_len, i, l, lines)
                     continue
                 #
-                rr=cdef_line.match(code_line)
+                rr = cdef_line.match(code_line)
                 if rr:
                     lines[i] = (line, rr, namespace)
                     i += 1
                     continue
                 #
-                rr=cdef_extend_from.match(code_line)
+                rr = cdef_extend_from.match(code_line)
                 if rr:
                     lines[i] = (line, rr, namespace)
-                    i=enter_extend_block(namespace, code_lines, suojin_len, i, l, lines )
+                    i = enter_extend_block(namespace, code_lines, suojin_len, i, l, lines)
                     continue
-                #
                 unknows.append((line, r, namespace))
             elif keyword==_ctypedef:
                 #
@@ -161,6 +267,26 @@ def enter_model_namespace(name: str, code_lines: list ):
                 lines[i] = (line, r, namespace)
                 i = enter_class_block(namespace, suojin_len, i, l, lines)
                 continue
+            elif keyword == _async:
+                rr=async_func.match(code_line)
+                lines[i]=(line, rr, namespace)
+                i+=1
+                continue
+            elif keyword == _from:
+            elif keyword == _cimport:
+                rr=cimport_.match(code_line)
+                assert rr
+                content=rr.groups()[0]
+                biemings=cut.cut_douhao(rr)
+
+            elif keyword == _include:
+                rr=include.match(code_line)
+                assert rr
+                include_filename=rr.groups()[0]
+                includes.append(include_filename)
+            elif keyword == _for:
+            elif keyword == _with:
+            elif keyword ==
             else:
                 lines[i] = (line, r, namespace)
                 i=enter_block(namespace, suojin_len, i, l, lines)
@@ -338,7 +464,7 @@ if __name__ == '__main__':
     p='D:/xrdb/tools.pyx'
     text=open_utf8(p).read()
     #it=cfunc.finditer(text)
-    code_lines=cut_line.cut_line(text)
+    code_lines=cut.cut(text)
     namespace= enter_model_namespace('tools', code_lines)
     pass
     #find_line(code_lines)
