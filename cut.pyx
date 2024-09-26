@@ -9,9 +9,6 @@ cdef fused pyucs:
 
 ctypedef unsigned int uint
 
-def get_type_and_bieming_or_vars(unicode text):
-    pass
-
 def cut_line(unicode text) ->list[tuple[str, int, int, int]]:
     cdef :
         uint k=PyUnicode_KIND (text)
@@ -34,16 +31,16 @@ def cut_douhao_and_strip(unicode text) ->list[str]:
     else:
         return _cut_douhao_and_strip(text, PyUnicode_4BYTE_DATA(text), len(text))
 
-def split_by_fangkuohao_and_del_kongbai(unicode text) ->list[str]:
+def split_by_fangkuohao_and_del_yuan_kuohao(unicode text) ->list[str]:
     cdef:
         uint k = PyUnicode_KIND(text)
         pyucs t
     if k == 2:
-        return _split_by_fangkuohao_and_del_kongbai(text, PyUnicode_2BYTE_DATA(text), len(text))
+        return _split_by_fangkuohao_and_del_yuan_kuohao(text, PyUnicode_2BYTE_DATA(text), len(text))
     elif k == 1:
-        return _split_by_fangkuohao_and_del_kongbai(text, PyUnicode_1BYTE_DATA(text), len(text))
+        return _split_by_fangkuohao_and_del_yuan_kuohao(text, PyUnicode_1BYTE_DATA(text), len(text))
     else:
-        return _split_by_fangkuohao_and_del_kongbai(text, PyUnicode_4BYTE_DATA(text), len(text))
+        return _split_by_fangkuohao_and_del_yuan_kuohao(text, PyUnicode_4BYTE_DATA(text), len(text))
 
 
 cdef :
@@ -77,25 +74,31 @@ init_sp_chars()
 assert left_kuohao2>left_kuohao1>left_kuohao0
 assert right_kuohao0<right_kuohao1<right_kuohao2
 
-cdef _split_by_fangkuohao_and_del_kongbai(unicode text, pyucs* t, uint l):
+cdef _split_by_fangkuohao_and_del_yuan_kuohao(unicode text, pyucs* t, uint l):
     cdef:
-        uint _ = 0, i = 0, start = 0, end, xinghao_count
+        uint _ = 0, i = 0, start = 0, end, xinghao_count=0, fkh_start=0, fkh_end
         pyucs c
-        list ll = []
+        list ll = [], xinghaos=[]
         list lll=[]
     i=break_kongbai(t,0,l)
     while(i<l):
         c = t[i]
-        if c != left_kuohao0 and c != left_kuohao1 and c != left_kuohao2:
+        if c != left_kuohao1 :
             pass
         else:
-            start = i
-            stat = find_fangkuohao_and_identify_type(t, i+1, l, &end)
-            s = [sub_text_del_yuan_kuohao(text, start, end), stat]
-            lll.append((tuple(ll), (s, stat)))
+            end = i
+            if start < end:
+                s = sub_text_del_yuan_kuohao(text, start, end)
+                ll.append(s)
+            s1=sub_text_del_yuan_kuohao(text, fkh_start, end)
+            fkh_start=end
+            stat = find_multi_fangkuohao_and_dentify_type(t, i+1, l, &fkh_end)
+            s2=sub_text_del_yuan_kuohao(text, fkh_start, fkh_end)
+            lll.append((tuple(ll), xinghao_count, tuple(xinghaos), (s1,s2), stat))
             ll=[]
-            i = end
-            start=end
+            xinghaos=[]
+            xinghao_count=0
+            i = start = fkh_start = fkh_end
             continue
         #
         if c != dyh and c != syh:
@@ -107,9 +110,14 @@ cdef _split_by_fangkuohao_and_del_kongbai(unicode text, pyucs* t, uint l):
         if c!=xinghao:
             pass
         else:
+            xinghao_count+=1
+            end=i
+            if start<end:
+                s=sub_text_del_yuan_kuohao(text, start, end)
+                #print(text, 'xinghao_start;', s, start, end)
+                ll.append(s)
+                start=end
             #找到连续的*（空白分隔）
-            xinghao_count=1
-            start=i
             i+=1
             while(i<l):
                 c=t[i]
@@ -123,25 +131,29 @@ cdef _split_by_fangkuohao_and_del_kongbai(unicode text, pyucs* t, uint l):
                 else:
                     break
             end=i
-            start=end
-            s = sub_text_del_yuan_kuohao(text, start, end)
-            ll.append((s, xinghao_count))
+            s=sub_text_del_yuan_kuohao(text, start, end)
+            start = end
+            #print(text, 'xinghao_end;', s, start, end)
+            xinghaos.append( s )
             continue
         #
         if c != kongge and c != tab:
             pass
         else:  #遇见空白，跳过并分割中间的文本，i是逗号的位置
             end=i
-            i+=1
-            s = sub_text_del_yuan_kuohao(text, start, end)
-            ll.append(s)
+            if start<end:
+                s = sub_text_del_yuan_kuohao(text, start, end)
+                #print(text, '@@@@@', s, start, end)
+                ll.append(s)
             #
-            i = break_kongbai(t, i, l)
+            i = break_kongbai(t, i+1, l)
             start = i
             continue
         i += 1
-    if ll:
-        lll.append((ll, None))
+    end = l
+    if start < end:
+        ll.append(sub_text_del_yuan_kuohao(text, start, end))
+        lll.append((tuple(ll), xinghao_count, xinghaos, None, None))
     return lll
 
 arr='array'
@@ -154,11 +166,11 @@ cdef sub_text_del_yuan_kuohao(unicode text, uint start, uint end):
         uint k = PyUnicode_KIND(s)
         pyucs t
     if k == 2:
-        return _text_del_yuan_kuohao(text, PyUnicode_2BYTE_DATA(text), len(text))
+        return _text_del_yuan_kuohao(s, PyUnicode_2BYTE_DATA(s))
     elif k == 1:
-        return _text_del_yuan_kuohao(text, PyUnicode_1BYTE_DATA(text), len(text))
+        return _text_del_yuan_kuohao(s, PyUnicode_1BYTE_DATA(s))
     else:
-        return _text_del_yuan_kuohao(text, PyUnicode_4BYTE_DATA(text), len(text))
+        return _text_del_yuan_kuohao(s, PyUnicode_4BYTE_DATA(s))
 
 cdef _text_del_yuan_kuohao(unicode s, pyucs* t):
     cdef :
@@ -178,29 +190,56 @@ cdef _text_del_yuan_kuohao(unicode s, pyucs* t):
             continue
     return s
 
+shuzu='shuzu'
 cdef find_fangkuohao_and_identify_type(pyucs* t, uint i, uint l, uint* i_ptr):
-    cdef pyucs c
-    stat='shuzu'
-    while(i<l):
-        c=t[i]
-        if c!=right_kuohao1:
-            if c==c':':
-                stat=typed_memoryview
-                i+=1
-                while(i<l):
+    stat=shuzu
+    while (i < l):
+        c = t[i]
+        if c != right_kuohao1:
+            if c == c':':
+                stat = typed_memoryview
+                i += 1
+                while (i < l):
                     if t[i] != right_kuohao1:
-                        continue
+                        i+=1
                     else:
                         i_ptr[0] = i + 1
                         return stat
-            elif c==douhao:
-                stat=cppclass
+            elif c'9'<c or c<c'0' : #c不是数字
+                stat = cppclass
             else:
                 pass
-            i+=1
+            i += 1
         else:
-            i_ptr[0]=i+1
+            i_ptr[0] = i + 1
             return stat
+    raise AssertionError
+
+cdef find_multi_fangkuohao_and_dentify_type(pyucs* t, uint i, uint l, uint* i_ptr):
+    cdef :
+        pyucs c
+        uint count=0
+    stat=find_fangkuohao_and_identify_type(t, i, l, &i)
+    if stat is shuzu:
+        count += 1
+    while(i<l):
+        # 跳过一段空白
+        while( i<l and (t[i]==kongge or t[i]==tab)):
+            i+=1
+        #
+        if t[i]==left_kuohao1:
+            stat = find_fangkuohao_and_identify_type(t, i+1, l, &i)
+            if stat is shuzu:
+                count += 1
+        else:
+            break
+    #
+    i_ptr[0]=i
+    if stat is shuzu:
+        return count
+    else:
+        assert count==0
+        return stat
 
 cdef uint break_kongbai( pyucs* t, uint i, uint l):
     while(i<l):
@@ -208,6 +247,7 @@ cdef uint break_kongbai( pyucs* t, uint i, uint l):
             i+=1
         else:
             return i
+    return l
 
 cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
     cdef :

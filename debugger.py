@@ -19,6 +19,7 @@ func_args_and_suffix=r'(?P<args>\([^()]+\))(.*)'
 cdef_block=re.compile(r'cdef(\s+(?P<public>public|private|readonly))?\s*:', re.DOTALL)
 cdef_line=re.compile(r'cdef\s+(?P<content>.+)',re.DOTALL)
 struct_union_enum_fused_class=re.compile(r'(?:cdef|ctypedef)\s+(?:.+?)?(?P<type>struct|union|enum|fused|cpplass|class)\s+(?P<name>[^:]+)\s*:', re.DOTALL)
+#cdef_class=re.compile('(?:cdef|ctypedef)\s+(?:.+?)?(cpplass|class)\s+(?P<name>[_\w.]+)(?P<c_struct>\s+\[[_\w.\s]+\])?(?P<maohao>\s+:)?', re.DOTALL)
 extend_struct_union_enum_fused_class=struct_union_enum_fused_class
 cdef_extend_from=re.compile(r'cdef\s+(?P<public>public\s+)?extend\s+from(?P<name>.+?):', re.DOTALL)
 ctypedef_bieming=re.compile(r'ctypedef\s+(?P<content>[^()]+)',re.DOTALL)
@@ -69,8 +70,8 @@ _maohao=':'
 _array='array'
 _memoryview='memoryview'
 class Ctype:
-    __slots__ = ( 'base_type_name', 'modifiers', 'ptr_levels')  # 指针和数组都被视为ptr_level，只不过指针是运行期变长
-    def __init__(self, base_type_name:tuple, modifier, ptr_level: list, ):
+    __slots__ = ( 'base_type_name', 'modifiers', 'ptr_levels', 'memoryview')  # 指针和数组都被视为ptr_level，只不过指针是运行期变长
+    def __init__(self, base_type_name:tuple, modifier, ptr_level: list):
         self.base_type_name, self.modifiers, self.ptr_levels, self.belong_model_name = base_type_name, modifier, ptr_level
     def __hash__(self):
         return hash(self.name)
@@ -82,14 +83,14 @@ class CClass:
         #type -> class or memoryview or cppclass
         self.name, self.type, self.base_type= name, type, base_type
 
-
 def get_struct_union_enum_fused_class_type_and_name(rr: re.Match, d: dict):
     g=rr.groups()
     t, name = g
-    d[name]=type
+    d[name]=Ctype(name, t, )
 
 def get_func_signature(rr: re.Match, d):
     pass
+
 def get_import_with_for_vars_biemings(content: str, d) ->list[str]:
     codens=cut.cut_douhao_and_strip(content)
     for coden in codens:
@@ -104,49 +105,92 @@ def get_import_with_for_vars_biemings(content: str, d) ->list[str]:
             d[bieming]=name
     return d
 
+def get_type_and_name(content: str):
+    words_xinghaocount_xinghaos_fangkuohao_stat_s = cut.split_by_fangkuohao_and_del_kongbai(content)
+    l = len(words_xinghaocount_xinghaos_fangkuohao_stat_s)
+    if l==2:
 
-
-def get_ctypedef_type_bieming(rr: re.Match, d: dict):
-    content=rr.groups()
-    codens_and_fangkuohaos = cut.split_by_fangkuohao_and_del_kongbai(content)
-
-
-def get_type_or_name(codens: list):
-    t, i = find_type_and_other_in_text(codens)
-
-
-def get_type_from_codens_and_fangkuohao(codens: list, fangkuohao):
-    text, stat=fangkuohao
-    if stat is cut.arr:
-        modifiers, start_i=get_const_volatile(codens)
-        l=len(codens)
-        benming=[]
-        for i in range(start_i, l):
-            c=codens[i]
-            if type(c) is str:
-                benming.append(c)
-            elif type(c) is tuple:
-                text, xinghao_count= c
-                ptr_level=[None]*xinghao_count
-                while(i<l):
-                    if type(c) is tuple:
-                        text, xinghao_count = c
-                        ptr_level = [None] * xinghao_count
-                        i+=1
-                    else:
-                        raise AssertionError
-                return Ctype(benming, modifiers, ptr_level)
-            else:
-                raise AssertionError
-        return Ctype(benming, modifiers, [])
-    elif stat is cut.typed_memoryview:
-        name=tuple(codens)
-        t=CClass(name, stat, text)
-    elif stat is cut.cppclass:
-        name=tuple(codens)
-        t=CClass(name, stat, text)
     else:
-        raise AssertionError
+        assert l==1
+        words, xinghaocount, _, fangkuohao, stat = words_xinghaocount_xinghaos_fangkuohao_stat_s[0]
+        assert stat is None
+        return get_1_fangkuohao(words, xinghaocount, fangkuohao, stat)
+
+def get_2_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s):
+    words, xinghaocount, _, fangkuohao, stat = words_xinghaocount_xinghaos_fangkuohao_stat_s[0]
+    if type(stat) is int:
+        assert xinghaocount == 0
+        modifier, base_type = get_modifier_and_base_type(words)
+        pl = shuzu.findall(fangkuohao)
+        assert len(pl) == stat
+        shared_ptr_level = get_ptr_level(xinghaocount, fangkuohao, stat)
+        words, xinghaocount, _, fangkuohao, stat = words_xinghaocount_xinghaos_fangkuohao_stat_s[1]
+        assert len(words) == 1
+        ptr_level1 = get_ptr_level(xinghaocount, fangkuohao, stat)
+        ptr_level = shared_ptr_level + ptr_level1
+        t = Ctype(base_type, modifier, ptr_level)
+        name = words[0]
+        return t, name, shared_ptr_level
+    else:
+        assert l == 2
+        shared_ptr_level = []
+        if stat is cut.typed_memoryview:
+            modifier, base_type = get_modifier_and_base_type(words)
+            t = Ctype(base_type, modifier, 'memoryview')
+        elif stat is cut.cppclass:
+            assert len(words) == 1
+            name = words[0]
+            t = CClass(name, stat, None)
+            #
+        words, xinghaocount, _, fangkuohao, stat = words_xinghaocount_xinghaos_fangkuohao_stat_s[1]
+        assert len(words) == 1
+        assert xinghaocount == 0
+        assert stat is None
+        name = words[0]
+        return t, name, shared_ptr_level
+def get_1_fangkuohao(words, xinghaocount, fangkuohao, stat):
+    shared_ptr_level=[]
+    ptr_level = get_ptr_level(xinghaocount, fangkuohao, stat)
+    name, words = words[-1], words[:-1]
+    modifier, base_type = get_modifier_and_base_type(words)
+    t = Ctype(base_type, modifier, ptr_level)
+    return t, name, shared_ptr_level
+
+def get_type_and_name_and_shuzu(words, xinghaocount, fangkuohao, stat):
+
+def get_type_or_var(content: str):
+    words_xinghaocount_xinghaos_fangkuohao_stat_s = cut.split_by_fangkuohao_and_del_kongbai(content)
+    l=len(words_xinghaocount_xinghaos_fangkuohao_stat_s)
+    if l==1:
+        words, xinghaocount, _, fangkuohao, stat = words_xinghaocount_xinghaos_fangkuohao_stat_s[0]
+        assert stat is None or type(stat) is int
+        return get_1_fangkuohao(words, xinghaocount, fangkuohao, stat)
+
+    else:
+        assert l==2
+
+
+def get_ptr_level(xinghao_count:int, fangkuohao:str, stat: int) -> list[int | None]:
+    if not stat is None:
+        assert fangkuohao
+        pl = shuzu.findall(fangkuohao)
+        assert len(pl) == stat
+        ptr_level=[]
+        for v in pl:
+            if v:
+                ptr_level.append(int(v))
+            else:
+                ptr_level.append(None)
+    else:
+        ptr_level = []
+    ptr_level + [None] * xinghao_count
+    return ptr_level
+
+def get_modifier_and_base_type(words):
+    modifier, start_i = get_const_volatile(words)
+    assert start_i < len(words)
+    base_type = words[start_i:]
+    return modifier, base_type
 
 def get_const_volatile(codens:str, ):
     coden=codens[0]
@@ -210,7 +254,7 @@ def enter_model_namespace(name: str, code_lines: list ):
                 rr = struct_union_enum_fused_class.match(code_line)
                 if rr:
                     lines[i] = (line, rr, namespace)
-                    keyword = rr.groups()[0]
+                    keyword, name = rr.groups()
                     if keyword == _class or keyword == _cppclass:
                         i = enter_cdef_class_namespace(None, code_lines, suojin_len, namespace, i, l, lines)
                     else:
@@ -234,11 +278,15 @@ def enter_model_namespace(name: str, code_lines: list ):
                     lines[i] = (line, rr, namespace)
                     i = enter_extend_block(namespace, code_lines, suojin_len, i, l, lines)
                     continue
+                #
+
                 unknows.append((line, r, namespace))
             elif keyword==_ctypedef:
                 #
                 rr = struct_union_enum_fused_class.match(code_line)
                 if rr:
+                    g=rr.groups()
+                    namespace=NameSpace()
                     lines[i] = (line, rr, namespace)
                     i = enter_cdef_block_vars(namespace, code_lines, suojin_len, i, l, lines)
                     continue
@@ -339,7 +387,15 @@ def enter_class_block(code_lines: list, sj_len: int, parent_namespace: tuple, st
             i += 1
         else:
             return i
-        
+
+def enter_struct_union_enum_fused_namespace(name: str, type_, line_func,  code_lines: iter, sj_len: int, parent_namespace: tuple, start_i: int, l: int, lines: list):
+    namespace = NameSpace(type_, name, [], sj_len, parent_namespace, start_i)
+    for i in range(start_i+1, l):
+        line = code_lines[i]
+        code_line, suojin_len, start_lineno, end_lino = line
+        if suojin_len > sj_len:  # 仍在块中
+            lines[i]=(line, line_func(line), namespace)
+
 def enter_cdef_class_namespace(name: str, code_lines: iter, sj_len: int, parent_namespace: tuple, start_i: int, l: int, lines: list):
     namespace=NameSpace('class', name, [], sj_len, parent_namespace, start_i)
     i=start_i+1
