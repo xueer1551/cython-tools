@@ -276,15 +276,38 @@ cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
                 pass
             else: #遇见逗号，提取两个逗号中间的文本，i是逗号的位置
                 end=trace_find_no_kongbai(t, i)
-                s=PyUnicode_Substring(text, start, end)
+                s=sub_string_and_del_xiahuaxian_and_del_hh(text, start, end)
                 ll.append(s)
                 start=i+1
                 break
             i+=1
     #把最后一个逗号到最后一个字符之间的文本给提取
-    s = PyUnicode_Substring(text, start, l)
+    s = sub_string_and_del_xiahuaxian_and_del_hh(text, start, l)
     ll.append(s)
     return ll
+
+cdef sub_string_and_del_xiahuaxian_and_del_hh(unicode text, uint start, uint end):
+    cdef :
+        unicode s=PyUnicode_Substring(text, start, end)
+        uint k = PyUnicode_KIND(s)
+        pyucs t
+    if k == 2:
+        _sub_string_and_del_xiahuaxian_and_del_hh( PyUnicode_2BYTE_DATA(s), len(s))
+    elif k == 1:
+        _sub_string_and_del_xiahuaxian_and_del_hh( PyUnicode_1BYTE_DATA(s), len(s))
+    else:
+        _sub_string_and_del_xiahuaxian_and_del_hh( PyUnicode_4BYTE_DATA(s), len(s))
+    return s
+
+cdef _sub_string_and_del_xiahuaxian_and_del_hh(pyucs* t, uint l):
+    cdef:
+        uint i
+        pyucs c
+    for i in range(l):
+        c=t[i]
+        if c==xhx or c==hh:
+            t[i]==kongge
+
 
 cdef uint trace_find_no_kongbai(pyucs* t, uint i,):
     cdef:
