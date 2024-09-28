@@ -8,33 +8,37 @@ warnings.filterwarnings('ignore', category=SyntaxWarning)
 
 内置类型=r'\s*(int|short|long|long long|double|float|char|list|tuple|dict|str|bytes|object|bytearray|Py_UCS4|struct|union|enum|class|cppclass|fused)'
 
-def get_cytho_include_path():
+def get_cython_include_path() ->str:
     p = sys.executable
     install_path = os.path.dirname(p)
     path=os.path.join(install_path, r'\Lib\site-packages\Cython\Includes')
+    return path
 def open_utf8(path):
     return open(path,'r',encoding='utf8')
 
 func_args_and_suffix=r'\((?P<args>[^()]+)\)(?P<suffix>.*)'
-cdef_block=re.compile(r'cdef(\s+(?P<public>public|private|readonly))?\s*:', re.DOTALL)
-cdef_line=re.compile(r'cdef\s+(?P<content>.+)',re.DOTALL)
-struct_union_enum_fused_class=re.compile(r'(?:cdef|ctypedef)\s+(?:.+?)?(?P<type>struct|union|enum|fused|cpplass|class)\s+(?P<name>[^:]+)\s*:', re.DOTALL)
-#cdef_class=re.compile('(?:cdef|ctypedef)\s+(?:.+?)?(cpplass|class)\s+(?P<name>[_\w.]+)(?P<c_struct>\s+\[[_\w.\s]+\])?(?P<maohao>\s+:)?', re.DOTALL)
-extend_struct_union_enum_fused_class=struct_union_enum_fused_class
-cdef_extend_from=re.compile(r'cdef\s+(?P<public>public\s+)?extend\s+from(?P<name>.+?):', re.DOTALL)
-ctypedef_bieming=re.compile(r'ctypedef\s+(?P<content>[^()]+)',re.DOTALL)
+cdef_block=re.compile(r'\s*cdef(\s+(?P<public>public|private|readonly))?\s*:', re.DOTALL)
+cdef_line=re.compile(r'\s*cdef\s+(?P<content>.+)',re.DOTALL)
+cdef_attr_line=re.compile(r'\s*cdef\s+(?P<public>public|private|readonly)?\s*(?P<content>.+)')
+struct_union_enum_fused_class=re.compile(r'\s*(?:cdef|ctypedef)\s+(?:.+?)?(?P<type>struct|union|enum|fused)\s+(?P<name>[^:]+)\s*:', re.DOTALL)
+cdef_class=re.compile(r'\s*cdef\s*(?P<cppclass>cpplass|class)\s*:')
+extend_class=re.compile(r'(?:cdef|ctypedef)\s+(?:.+?)?(?P<cppclass>cpplass|class)\s+(?P<name>[_\w.]+)(?P<c_struct>\s+\[[_\w.\s]+\])?(?P<maohao>\s+:)?', re.DOTALL)
+extend_struct_union_enum_fused=struct_union_enum_fused_class
+cdef_extend_from=re.compile(r'\s*cdef\s+(?P<public>public\s+)?extend\s+from(?P<name>.+?):', re.DOTALL)
+ctypedef_bieming=re.compile(r'\s*ctypedef\s+(?P<content>[^()]+)',re.DOTALL)
 from_import=re.compile(r'\s*from\s+(.+?)\s+(c?import)(?P<content>.+)', re.DOTALL)
-with_=re.compile(r'\s*with\s+(?P<nogil>nogil|.+):', re.DOTALL)
-import_=re.compile(r'c?import\s+(?P<content>.+)', re.DOTALL)
+with_=re.compile(r'\s*with\s+(.+):', re.DOTALL)
+with_nogil=re.compile(r'\s*with\s+nogil\s*:')
+import_=re.compile(r'\s*(c?import)\s+(?P<content>.+)', re.DOTALL)
 func_name_and_arg_and_suffix=rf'(?P<type_and_name>[^()]+){func_args_and_suffix}'
 modifiers_=r'(?P<modifier>(?:public\s+)?(?:api\s+)?(?:inline\s+)?(?:volatile\s+|const\s+){0,2})'
 func=modifiers_+func_name_and_arg_and_suffix
-extend_func=re.compile(func, re.DOTALL)
-cdef_func=re.compile(fr'(c?p?def)\s+{func}', re.DOTALL)
-async_func=re.compile(rf'(async\s+)?(?P<cpdef>def)\s+{func_name_and_arg_and_suffix}', re.DOTALL)
-ctypedef_func0=re.compile(rf'ctypedef\s+{func}', re.DOTALL)
-ctypedef_func1=re.compile(rf'ctypedef\s+{modifiers_}(?P<type>(?:[_\w]+\s+)+)(?:\(\s*\**(?P<name>[_\w]+)\s*\)){func_args_and_suffix}', re.DOTALL)
-include=re.compile(r'include\s*[\'"]{1,3}(?P<name>[^\'"]+)[\'"]{1,3}', re.DOTALL)
+extend_func=re.compile(r'\s*'+func, re.DOTALL)
+cdef_func=re.compile(fr'\s*(?:async\s+)?(c?p?def)\s+{func}', re.DOTALL)
+async_func=re.compile(rf'\s*(?:async\s+)?(?:def)\s+{func_name_and_arg_and_suffix}', re.DOTALL)
+ctypedef_func0=re.compile(rf'\s*ctypedef\s+{func}', re.DOTALL)
+ctypedef_func1=re.compile(rf'\s*ctypedef\s+{modifiers_}(?P<type>(?:[_\w]+\s+)+)(?:\(\s*\**(?P<name>[_\w]+)\s*\)){func_args_and_suffix}', re.DOTALL)
+include=re.compile(r'\s*include\s*[\'"]{1,3}(?P<name>[^\'"]+)[\'"]{1,3}', re.DOTALL)
 global_=re.compile(r'\s*global\s+(?P<name>[\w_]+)', re.DOTALL)
 for_=re.compile(r'\s*for\s+(?P<content>.+)?\s+(in|from)\s+', re.DOTALL)
 except_=re.compile(r'\s*except(?P<content>(?:\s+)[\w_]+)?((?:\s+as\s+)([\w_]+)\s*)?:', re.DOTALL)
@@ -73,20 +77,20 @@ _as='as'
 _maohao=':'
 _array='array'
 _memoryview='memoryview'
-class Model:
-    __slots__ = ('name', 'path', 'suffix', 'classes', 'funcs', 'vars')
+_nogil='nogil'
 
-class FuncSignature:
-    __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil')
-    def __init__(self, name:str, return_type: str, args_text: str, suffix_text:str):
-        self.name, self.return_type, self.args_text, self.suffix_text = name, return_type, args_text, suffix_text
-        if nogil_.search(suffix_text):
-            self.nogil=True
-        else:
-            self.nogil=False
+#-----------------------------------------------------------------------------------------------------------------------
+
+class Model:
+    __slots__ = ('name', 'path', 'suffix', 'classes', 'funcs', 'vars', 'types', 'cimport', 'from_cimport', 'includes')
+    def __init__(self, name:str, path:str, suffix:str, ):
+        self.name, self.path, self.suffix = name, path, suffix
+        self.funcs, self.vars, self.cimport, self.from_cimport, self.includes = {},{},{},{},{}
+        self.types={}
+
 
 class Func:
-    __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil', 'c_declare_vars', 'vars')
+    __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil', 'c_declare_vars', 'vars', )
     def __init__(self, name:str, return_type: str, args_text: str, args: dict, suffix_text:str):
         self.name, self.return_type, self.args_text, self.suffix_text = name, return_type, args_text, suffix_text
         self.c_declare_vars, self.vars= args,  copy.deepcopy(args)
@@ -94,10 +98,10 @@ class Func:
             self.nogil=True
         else:
             self.nogil=False
-    def cdef_block_line_func(self, line: str):
+    def cdef_block_line_func(self, line: str, model:Model):
         var_names = decode_cdef_line(line, self.c_declare_vars)
         return var_names
-    def line_func(self, line:str):
+    def line_func(self, line:str, model:Model):
         r=cdef_line.match(line)
         if r:
             content=r.groups()[0]
@@ -108,6 +112,46 @@ class Func:
         if r:
             get_left_express(r, self.vars)
 
+class FuncSignature:
+    __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil')
+    def __init__(self, name:str, return_type: str, args_text: str, suffix_text:str):
+        self.name, self.return_type, self.args_text, self.suffix_text = name, return_type, args_text, suffix_text
+        if nogil_.search(suffix_text):
+            self.nogil=True
+        else:
+            self.nogil=False
+    def to_func(self) ->Func:
+        func=Func.__new__(Func)
+        func.name, func.return_type, func.args_text, func.suffix_text, func.nogil = self.name, self.return_type, self.args_text, self.suffix_text, self.nogil
+        args={}
+        get_cdef_func_args(self.args_text, args)
+        func.c_declare_vars, func.vars= args,  copy.deepcopy(args)
+        return func
+
+class CimportModel:
+    __slots__ = ('from_text', 'name', 'path', 'from_text_is_pxd')
+    def __init__(self, from_text:str, name:str):
+        self.from_text, self.name = from_text, name
+        levels = from_text.replace('.', '/')
+        if os.path.exists(levels):
+            path = levels
+        else:
+            pp = get_cython_include_path()
+            path = os.path.join(pp, levels)
+            if os.path.exists(levels):
+                pass
+            else:
+                raise FileNotFoundError
+        if os.path.isdir(path):
+            self.path=path
+            self.from_text_is_pxd=False
+        else:
+            pxd =path+'.pxd'
+            if os.path.exists(pxd):
+                self.path=pxd
+                self.from_text_is_pxd=True
+            else:
+                raise FileNotFoundError
 
 class Ctype:
     __slots__ = ( 'base_type_name', 'modifiers', 'ptr_levels', 'memoryview')  # 指针和数组都被视为ptr_level，只不过指针是运行期变长
@@ -119,13 +163,22 @@ class Ctype:
         return Ctype(self.base_type_name, self.modifiers, ptr_level+self.ptr_levels)
 
 class CClass:
-    __slots__ = ('name', 'type', 'attrs' )
+    __slots__ = ('name', 'type', 'public_attrs','private_attrs','readonly_attrs' )
     def __init__(self, name:str, type:str,):
         #type -> class or cppclass
         self.name, self.type = name, type
-        self.attrs={}
+        self.public_attrs, self.readonly_attrs, self.private_attrs={},{},{}
+    def public_line_func(self, line:str, model:Model):
+        var_names = decode_cdef_line(line, self.public_attrs)
+        return var_names
+    def readonly_line_func(self, line:str, model:Model):
+        var_names = decode_cdef_line(line, self.readonly_attrs)
+        return var_names
+    def private_line_func(self, line:str, model:Model):
+        var_names = decode_cdef_line(line, self.private_attrs)
+        return var_names
 
-
+            
 class Variable:
     __slots__ = ('name', 'type', 'set_value')
     def __init__(self, name:str, type: [Ctype|CClass|object], set_value:str):
@@ -136,7 +189,7 @@ class Struct:
     def __init__(self, name: str):
         self.name = name
         self.var_mapping_type={}
-    def line_func(self, line:str):
+    def line_func(self, line:str, model:Model):
         decode_cdef_line(line, self.var_mapping_type)
         return False
 
@@ -145,7 +198,7 @@ class Union:
     def __init__(self, name: str):
         self.name = name
         self.type_mapping_type={}
-    def line_func(self, line:str):
+    def line_func(self, line:str, model:Model):
         decode_cdef_line(line, self.type_mapping_type)
         return False
 
@@ -154,7 +207,7 @@ class Enum:
     def __init__(self, name: str):
         self.name = name
         self.vars=[]
-    def line_func(self, line:str):
+    def line_func(self, line:str, model:Model):
         words=words_.findall(line)
         assert len(words)==1
         self.vars.append(words[0])
@@ -165,7 +218,7 @@ class Fused:
     def __init__(self,name: str):
         self.name=name
         self.types=[]
-    def line_func(self, line: str):
+    def line_func(self, line: str, model:Model):
         words = words_.findall(line)
         assert len(words) == 1
         self.types.append(words[0])
@@ -175,12 +228,18 @@ class Fused:
             line = code_lines[i]
             code_line, suojin_len, start_lineno, end_lino = line
             if suojin_len > 0:  # 仍在块中
-                lines[i] = (line, line_func(line), model)
+                lines[i] = (line, line_func(line, model), model)
 
 #-----------------------------------------------------------------------------------------------------------------------
-d0={'struct':Struct, 'union': Union, 'enum':Enum, 'fused':Fused}
+def try_enter_block( code_lines: iter, sj_len: int, line_func:callable,  start_i: int, l: int, lines:list,model:Model) ->int:
+    line=code_lines[start_i]
+    r=cdef_func.match(line)
+    if r:
+        signature :FuncSignature = get_cdef_func_signature(r, model.funcs, {})
+        func=signature.to_func()
 
-def comment_line_func(line: str, c_declare_vars: dict, vars: dict, model_vars:dict):
+
+def comment_line_func(line: str, c_declare_vars: dict, vars: dict, model:Model):
     #
     r=other_keywords.match(line)
     if r:
@@ -196,30 +255,152 @@ def comment_line_func(line: str, c_declare_vars: dict, vars: dict, model_vars:di
     if r:
         names=get_left_express(r, vars)
         return names
+    r=with_nogil.match(line)
+    if r:
+        return _nogil
     #
-    for keyword_re in (for_, with_, except_, import_, from_import):
+    for keyword_re in (for_, with_, except_):
         r = keyword_re.match(line)
         if r:
             d=r.groupdict()
             names = get_as_biemings(d['content'])
             return [x[0] for x in names]
     #
+    r=import_.match(line)
+    if r:
+        cimport, names_text=r.groups()
+        if cimport:
+            names = get_as_biemings(names_text)
+            for bieming, name in names:
+                model.from_cimport[bieming]=CimportModel('', name, )
+            model.cimport.update(names)
+            return False
+    #
+    r=from_import.match(line)
+    if r:
+        from_text, cimport, names_text = r.groups()
+        if cimport:
+            names=get_as_biemings(names_text)
+            for bieming, name in names:
+                model.from_cimport[bieming]=CimportModel(from_text, name )
+            return False
+    #
     r=global_.match(line)
     if r:
         name=r.groups()[0]
         return [name]
     #
-    for kw in (import_, from_import):pass
+    return False
+
+def enter_func_block( code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, func:Func, model:Model )->int:
+    i=start_i
+    while(i<l):
+        line=code_lines[i]
+        code_line, suojin_len, _, __ = line
+        if suojin_len>sj_len:
+            cdef_sj_len=suojin_len
+            r = cdef_block.match(line)
+            if r:
+                ii=i
+                lines[i]=[line, None, '']
+                for i in range(start_i, l):
+                    line = code_lines[i]
+                    code_line, suojin_len, _, __ = line
+                    if suojin_len > sj_len:
+                        lines[i] = (line, func.cdef_block_line_func(line), line[:cdef_sj_len]+_cdef+line)
+                    else:
+                        break
+                continue
+            else:
+                comment_line_func(line, func.c_declare_vars, func.vars, model)
+                i+=1
+        else:
+            return i
+
+def enter_class_func( code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, cls:CClass, model:Model )->int:
+    i = start_i
+    while (i < l):
+        line = code_lines[i]
+        code_line, suojin_len, _, __ = line
+        if suojin_len > sj_len:
+            r=cdef_attr_line.match(code_line)
+            if r:
+                public, content = r.groups()
+                if public=='readonly':
+                    attr_names=cls.readonly_line_func(line, model)
+                elif public=='public':
+                    attr_names=cls.public_line_func(line, model)
+                else:
+                    attr_names=cls.private_attrs_func(line, model)
+                lines[i]=(line, attr_names, line)
+            #
+            r=cdef_block.match(code_line)
+            if r:
+                public=r.groups()[0]
+                if public == 'readonly':
+                    i=enter_block(code_lines, suojin_len, cls.readonly_line_func, i+1, lines)
+                elif public == 'public':
+                    i=enter_block(code_lines, suojin_len, cls.public_line_func, i+1, lines)
+                else:
+                    i=enter_block(code_lines, suojin_len, cls.private_line_func, i+1, lines)
+                continue
+            #
+            r=cdef_func.match(code_line)
+            if r:
+                enter_func_block(code_lines, suojin_len, i)
 
 
-    
+def enter_struct_union_enum_fused_block( rr: re.Match, code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, model:Model )->int:
+    block=get_struct_union_enum_fused_block(rr, model.types)
+    return enter_block(code_lines, sj_len, block.line_func, start_i, l, lines)
 
-def enter_struct_union_enum_fused_class_type_and_name(rr: re.Match, type_symbol_table: dict, vars_symbol_table: dict, mode:Model):
+d0={'struct':Struct, 'union': Union, 'enum':Enum, 'fused':Fused}
+def get_struct_union_enum_fused_block(rr: re.Match, type_symbol_table: dict):
     g=rr.groups()
     t, name = g
     cls=d0[t]
-    type_symbol_table[name] =cls(name)
-    return
+    block=cls(name)
+    type_symbol_table[name] =block
+    return block
+
+def enter_block( code_lines: iter, sj_len: int, line_func:callable,  start_i: int, l: int, lines:list, block ) ->int:
+    for i in range(start_i, l, lines):
+        line = code_lines[i]
+        code_line, suojin_len, _, __ = line
+        if suojin_len > sj_len:
+            lines[i]=(line, line_func(line), line)
+        else:
+            return i
+    return l
+
+def enter_extend_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, lines:list, model:Model ):
+    i=start_i
+    while(i<l):
+        line=code_lines[i]
+        code_line, suojin_len, _, __ = line
+        if suojin_len>sj_len:
+            if extend_no_used.match(code_line):continue
+            #
+            r=extend_struct_union_enum_fused.match(code_line)
+            if r:
+                enter_struct_union_enum_fused_block(r, code_lines, sj_len, start_i, l, lines, model)
+                continue
+            #
+            r=extend_func.match(code_line)
+            if r:
+                get_extend_func_signature(r, model.funcs)
+                #get_cdef_func_signature(r, model.funcs, {})
+                lines[i]=(line, r, line)
+                continue
+            #
+            r=cdef_func.match(code_line)
+            if r:
+                get_extend_func_signature(r, model.funcs)
+                lines[i]=(line, r, line)
+                i=break_block(code_lines, sj_len, i+1, l)
+        else:
+            return i
+    return l
 
 def get_ctypede_type_bieming(rr :re.Match, type_symbol_table: dict):
     content = rr.groups()
@@ -244,6 +425,7 @@ def get_ctypedef_func0_signature(rr: re.Match, type_symbol_table: dict):
     t=FuncSignature(name, return_type, args_text, suffix_text)
     type_symbol_table[name]=t
     #
+get_extend_func_signature=get_ctypedef_func0_signature
 
 def get_ctypedef_func1_signature(rr: re.Match, type_symbol_table: dict):
     modifier_text, type_text, name_text, args_text, suffix_text = rr.groups()
@@ -259,6 +441,9 @@ def get_ctypedef_func1_signature(rr: re.Match, type_symbol_table: dict):
 
 def get_cdef_func_signature(rr: re.Match, parent_vars_symbol_table: dict, self_vars_symbol_table: dict):
     _, modifier_text, type_and_name_text, args_text, suffix_text=rr.groups()
+    get_func(modifier_text, type_and_name_text, args_text, suffix_text, parent_vars_symbol_table)
+
+def get_func(modifier_text, type_and_name_text, args_text, suffix_text, parent_vars_symbol_table: dict, self_vars_symbol_table: dict):
     modifier = tuple(words_.findall(modifier_text))
     return_type, func_name = get_func_return_type_and_name(type_and_name_text, modifier)
     args_text_ = cut.cut_douhao_and_strip(args_text)
@@ -268,6 +453,12 @@ def get_cdef_func_signature(rr: re.Match, parent_vars_symbol_table: dict, self_v
         tt, var_name, _ = get_type_and_name(arg_text)
         if var_name: #不是(a,b,*,c,d)中的*
             self_vars_symbol_table[var_name]=tt
+
+def get_cdef_func_args(args_text: str, symbol_table:dict): #注意ctypedef的不能用这个
+    type_and_names=cut.cut_douhao_and_strip(args_text)
+    for type_and_name in type_and_names:
+        t, name, _=get_type_and_name(type_and_name)
+        symbol_table[name]=t
 
 def get_left_express(rr: re.Match, symbol_table:dict) ->list[str]:
     left, right=rr.groups()
@@ -555,154 +746,6 @@ def enter_model_namespace(name: str, code_lines: list ):
         raise AssertionError
         #
     return namespace
-
-def enter_block(namespace: NameSpace, sj_len:int, start_i: int, l: int, lines: list, ):
-    i=start_i+1
-    while(i<l):
-        line = code_lines[i]
-        code_line, suojin_len, start_lineno, end_lino = line
-        if suojin_len>sj_len:
-            r=check_line_need_process(code_line, suojin_len)
-            lines[i]=(line, r, namespace)
-            i+=1
-        else:
-            return i
-
-def enter_class_block(code_lines: list, sj_len: int, parent_namespace: tuple, start_i: int, l: int, lines: list):
-    #
-    while (i < l):
-        line = code_lines[i]
-        code_line, suojin_len, start_lineno, end_lino = line
-        if suojin_len > sj_len:  # 仍在块中
-            #
-            r = cdef_func.match(code_line, suojin_len)
-            if r:
-                i = enter_func_namespace(None, parent_namespace, code_lines, sj_len, i, l, lines)
-                continue
-            #
-            r = async_func.match(code_line, suojin_len)
-            if r:
-                i = enter_func_namespace(None, parent_namespace, code_lines, sj_len, i, l, lines)
-                continue
-            #
-            lines[i] = check_line_need_process(code_line, suojin_len)
-            i += 1
-        else:
-            return i
-
-
-def enter_struct_union_enum_fused_namespace(name: str, type_, line_func,  code_lines: iter, sj_len: int, parent_namespace: tuple, start_i: int, l: int, lines: list):
-    namespace = NameSpace(type_, name, [], sj_len, parent_namespace, start_i)
-    for i in range(start_i+1, l):
-        line = code_lines[i]
-        code_line, suojin_len, start_lineno, end_lino = line
-        if suojin_len > sj_len:  # 仍在块中
-            lines[i]=(line, line_func(line), namespace)
-
-def enter_cdef_class_namespace(name: str, code_lines: iter, sj_len: int, parent_namespace: tuple, start_i: int, l: int, lines: list):
-    namespace=NameSpace('class', name, [], sj_len, parent_namespace, start_i)
-    i=start_i+1
-    while(i<l):
-        line=code_lines[i]
-        code_line, suojin_len, start_lineno, end_lino = line
-        if suojin_len>sj_len: #仍在块中
-            #
-            r = cdef_func.match(code_line, suojin_len)
-            if r:
-                i = enter_func_namespace(name, parent_namespace, code_lines, sj_len, i, l, lines)
-                continue
-            #
-            r=cdef_line.match(code_line, suojin_len)
-            if r:
-                lines[i]=(line, r, namespace)
-                i+=1
-                continue
-            #
-            r=cdef_block.match(code_line, suojin_len)
-            if r:
-                i=enter_cdef_block_vars(code_lines, sj_len, parent_namespace, i, l, lines)
-                continue
-            #
-            r=async_func.match(code_line, suojin_len)
-            if r:
-                i=enter_func_namespace(name, parent_namespace, code_lines, sj_len, i, l, lines)
-                continue
-            #
-            lines[i] = check_line_need_process(code_line, suojin_len)
-            i += 1
-        else:
-            return i
-    return l
-
-def enter_cdef_block_vars( namespace: NameSpace, code_lines: iter, sj_len: int, start_i: int, l: int, lines: list, ):
-    cdef_block_start = start_i
-    for i in range(start_i+1, l):
-        line = code_lines[i]
-        code_line, suojin_len, start_lineno, end_lino = line
-        if suojin_len>sj_len:
-            first_char=code_line[suojin_len]
-            if first_char != '#' and first_char!= '\n':
-                lines[i]=(line, line, namespace)
-        else:
-            cdef_block_end = i
-            namespace.cdef_blocks_start_end.append((cdef_block_start, cdef_block_end))
-            return i
-    cdef_block_end = l
-    namespace.cdef_blocks_start_end.append((cdef_block_start, cdef_block_end))
-    return l
-
-def enter_func_namespace( name:str, parent_namespace: type, code_lines: iter, sj_len: int,  start_i: int, l: int, lines: list ):
-    namespace=NameSpace('func', name, [], sj_len, parent_namespace, start_i)
-    i=start_i+1
-    while(i<l):
-        line = code_lines[i]
-        code_line, suojin_len, start_lineno, end_lino = line
-        if suojin_len>sj_len:
-            r=cdef_block.match(code_line, suojin_len)
-            if r:
-                i=enter_cdef_block_vars(namespace, code_lines, sj_len, start_i, l, lines)
-                continue
-            #
-            r=cdef_line.match(code_line, suojin_len)
-            if r:
-                lines[i] = (line, r, namespace)
-            else:
-                #
-                r=check_line_need_process(code_line, suojin_len)
-                lines[i] = (line, r, namespace)
-            #
-            i+=1
-        else:
-            namespace.end_i=i
-            return i
-    return l
-
-def enter_extend_block( namespace: NameSpace, code_lines: iter, sj_len: int,  start_i: int, l: int, lines:list ):
-    i=start_i
-    while(i<l):
-        line=code_lines[i]
-        code_line, suojin_len, _, __ = line
-        if suojin_len>sj_len:
-            if extend_no_used.match(code_line, suojin_len):continue
-            #
-            r=extend_struct_union_enum_fused_class.match(code_line, suojin_len)
-            if r:
-                enter_cdef_block_vars(namespace, code_lines, sj_len, start_i, l, lines)
-                continue
-            #
-            r=extend_func.match(code_line, suojin_len)
-            if r:
-                lines[i]=(line, r, namespace)
-                continue
-            #
-            r=cdef_func.match(code_line, suojin_len)
-            if r:
-                lines[i]=(line, r, namespace)
-                i=break_block(code_lines, sj_len, i+1, l)
-            #
-        else:
-            return i
-    return l
 
 def check_line_need_process(code_line: str, suojin_len: int):
     r = left_value_express.match(code_line, suojin_len)
