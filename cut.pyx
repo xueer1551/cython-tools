@@ -139,7 +139,7 @@ cdef _split_by_fangkuohao_and_del_yuan_kuohao(unicode text, pyucs* t, uint l):
         #
         if c != kongge and c != tab:
             pass
-        else:  #遇见空白，跳过并分割中间的文本，i是逗号的位置
+        else:  #遇见空白，跳过并分割中间的文本，i是非空白字符的位置
             end=i
             if start<end:
                 s = sub_text_del_yuan_kuohao(text, start, end)
@@ -153,7 +153,15 @@ cdef _split_by_fangkuohao_and_del_yuan_kuohao(unicode text, pyucs* t, uint l):
     end = l
     if start < end:
         ll.append(sub_text_del_yuan_kuohao(text, start, end))
-        lll.append((tuple(ll), xinghao_count, xinghaos, None, None))
+    else:
+        pass
+        #print(text, start, end, i, lll, ll)
+    #
+    if ll:
+        s1 = sub_text_del_yuan_kuohao(text, fkh_start, l)
+        s2 = s1
+        lll.append((tuple(ll), xinghao_count, tuple(xinghaos), (s1, s2), None))
+
     return lll
 
 arr='array'
@@ -249,6 +257,7 @@ cdef uint break_kongbai( pyucs* t, uint i, uint l):
             return i
     return l
 
+none_str=''
 cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
     cdef :
         uint _=0, i=0, start=0, end
@@ -260,6 +269,7 @@ cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
         # i是第一个空白字符的位置
         while(i<l):
             c = t[i]
+            #print(i, c, '---', text)
             if c != left_kuohao0 and c != left_kuohao1 and c != left_kuohao2:
                 pass
             else:
@@ -275,15 +285,18 @@ cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
             if c!=douhao:
                 pass
             else: #遇见逗号，提取两个逗号中间的文本，i是逗号的位置
-                end=trace_find_no_kongbai(t, i)
+                end=trace_find_no_kongbai(t, i-1) +1
                 s=sub_string_and_del_xiahuaxian_and_del_hh(text, start, end)
                 ll.append(s)
                 start=i+1
+                i+=1
                 break
             i+=1
     #把最后一个逗号到最后一个字符之间的文本给提取
-    s = sub_string_and_del_xiahuaxian_and_del_hh(text, start, l)
-    ll.append(s)
+    end=trace_find_no_kongbai(t,l-1)+1
+    if start<end:
+        s = sub_string_and_del_xiahuaxian_and_del_hh(text, start, end)
+        ll.append(s)
     return ll
 
 cdef sub_string_and_del_xiahuaxian_and_del_hh(unicode text, uint start, uint end):
@@ -314,12 +327,12 @@ cdef uint trace_find_no_kongbai(pyucs* t, uint i,):
         pyucs c
     while(i>0):
         c=t[i]
-        if c == kongge or c == tab or c == kongbai0:
+        if c == kongge or c == tab or c == hh:
             i-=1
         else:
             return i
     c = t[0]
-    if c == kongge or c == tab or c == kongbai0:
+    if c == kongge or c == tab or c == hh:
         raise AssertionError
     else:
         return 0
@@ -343,6 +356,7 @@ cdef uint find_kongbai(pyucs* t, uint i,  uint l, ):
             continue
         else:
             return i
+    return l
 
 cdef list _cut_line(unicode text, pyucs* t, uint l):
     cdef:
@@ -370,11 +384,18 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
         if c!=jinghao:
             pass
         else:
-            lte = line_text
-            ll.append((PyUnicode_Substring(text, start, i + 1), suojin, lts, lte))
-            #
-            i=break_jinghao_zhushi(t, i, l, &line_text)
-            lts=i
+            lte=line_text
+            i+=1
+            while(i<l):
+                if t[i]!=hh:
+                    i+=1
+                else:
+                    i+=1
+                    line_text+=1
+                    break
+            ll.append((PyUnicode_Substring(text, start, i), suojin, lts, lte))
+            lts=lte
+            start=i
             suojin = find_suojin(t, i, l)
             continue
         #
@@ -388,10 +409,16 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
         else: # c is \n
             line_text += 1
             if want_hh(t, i, l):
+                i += 1
+                while (i < l):
+                    if t[i] == hh:
+                        line_text+=1
+                        i += 1
+                    else:
+                        break
                 lte = line_text
-                ll.append((PyUnicode_Substring(text, start, i+1), suojin, lts, lte))
+                ll.append((PyUnicode_Substring(text, start, i), suojin, lts, lte))
                 lts=lte
-                i+=1
                 start = i
                 suojin=find_suojin(t, i, l)
                 #suojin_text=PyUnicode_Substring(text, i, i+suojin)
@@ -402,14 +429,12 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
         i+=1
     return ll
 
-cdef inline next_line(unicode text, pyucs* t,  uint i, uint l, uint start, uint line_text, lts, uint suojin, list ll, uint* sj, uint* i_ptr):
-    lte = line_text
-    ll.append((PyUnicode_Substring(text, start, i + 1), suojin, lts, lte))
-    lts = lte
-    suojin = find_suojin(t, i, l)
-    sj[0]=suojin
-    i_ptr[0]= i+suojin
-    return lts, lte
+cdef inline uint find_multi_hh(pyucs* t, uint i, uint l):
+    while(i<l):
+        if t[i]==hh:
+            i+=1
+        else:
+            return i
 
 cdef bint want_hh(pyucs* t, uint i, uint l):
     cdef uint c, ii
@@ -523,19 +548,11 @@ cdef uint break_jinghao_zhushi(pyucs* t, uint i, uint l, uint* line_text):
         pyucs c
     while (i < l):
         c = t[i]
-        if c != jinghao:
+        if c!=hh:
             i+=1
-            continue
         else:
-            i+=1
-            while(i<l):
-                c = t[i]
-                if c != hh:
-                    i+=1
-                else:
-                    line_text[0]+=1
-                    return i+1
-            return l
+            line_text[0]+=1
+            return i+1
     return l
 
 
