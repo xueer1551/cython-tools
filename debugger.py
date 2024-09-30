@@ -1,3 +1,4 @@
+from __future__ import annotations
 import re, sys, os
 import time
 
@@ -5,6 +6,7 @@ import pyximport
 pyximport.install(language_level=3)
 import cut
 import warnings, copy
+
 # 忽略所有的 SyntaxWarning 警告
 warnings.filterwarnings('ignore', category=SyntaxWarning)
 
@@ -13,17 +15,17 @@ warnings.filterwarnings('ignore', category=SyntaxWarning)
 def get_cython_include_path() ->str:
     p = sys.executable
     install_path = os.path.dirname(p)
-    path=os.path.join(install_path, r'\Lib\site-packages\Cython\Includes')
+    path=os.path.join(install_path, r'Lib\site-packages\Cython\Includes')
     return path
 def open_utf8(path):
     return open(path,'r',encoding='utf8')
 
-func_args_and_suffix=r'\((?P<args>[^()]+)\)(?P<suffix>.*)'
+func_args_and_suffix=r'\((?P<args>[^()]*)\)(?P<suffix>.*)'
 cdef_block=re.compile(r'\s*cdef(\s+(?P<public>public|private|readonly))?\s*:', re.DOTALL)
 cdef_line=re.compile(r'\s*cdef\s+(?P<content>.+)',re.DOTALL)
 cdef_attr_line=re.compile(r'\s*cdef\s+(?P<public>public|private|readonly)?\s*(?P<content>[^()]+)')
 cdef_struct_union_enum_fused=re.compile(r'\s*(?:cdef|ctypedef)\s+(?:.+?)?(?P<type>struct|union|enum|fused)\s+(?P<name>[^:]+)\s*:', re.DOTALL)
-cdef_class=re.compile(r'\s*(?P<cdef>cdef|ctypedef)?\s*(?P<cppclass>cpplass|class)\s+(?P<name>[_\w]+):')
+cdef_class=re.compile(r'\s*(?P<cdef>cdef|ctypedef)?\s*(?P<cppclass>cpplass|class)\s+(?P<name>[_\w]+)(?P<jicheng>\s*\([^()]+\)\s*)?:', re.DOTALL)
 extend_class=re.compile(r'\s*(?:cdef|ctypedef)\s+(?:extern\s+)?(?P<cppclass>cpplass|class)\s+(?P<name>[_\w.]+\s*)(?P<c_struct>\[[_\w.\s]+\]\s*)?(?P<maohao>:)?', re.DOTALL)
 extend_struct_union_enum_fused=cdef_struct_union_enum_fused
 cdef_extend_from=re.compile(r'\s*cdef\s+(?P<public>public\s+)?extend\s+from(?P<name>.+?):', re.DOTALL)
@@ -44,18 +46,21 @@ include=re.compile(r'\s*include\s*[\'"]{1,3}(?P<name>[^\'"]+)[\'"]{1,3}', re.DOT
 global_=re.compile(r'\s*global\s+(?P<name>[\w_]+)', re.DOTALL)
 for_=re.compile(r'\s*for\s+(?P<content>.+)?\s+(in|from)\s+', re.DOTALL)
 except_=re.compile(r'\s*except(?P<content>(?:\s+)[\w_]+)?((?:\s+as\s+)([\w_]+)\s*)?:', re.DOTALL)
-other_keywords=re.compile(r'(?:[#@]|(if|elif|else|wihle|continue|try|raise|finally|match|case|return|await)[\s(:]|pass|break)', re.DOTALL)
-need_keywords=re.compile(r'(cdef|cpdef|ctypedef|def|with|for|from|cimport|include|async|global|class|except)\s', re.DOTALL)
-no_used=re.compile('(?:\s*[#@\'"\n])')
+other_keywords=re.compile(r'\s*(?:[#@]|(if|elif|else|wihle|continue|try|raise|finally|match|case|return|await)|pass|break)', re.DOTALL)
+need_keywords=re.compile(r'\s*(cdef|cpdef|ctypedef|def|with|for|from|cimport|include|async|global|class|except)\s', re.DOTALL)
+comment_block=re.compile('\s*(if|elif|else|while|try|finally|match|case|with|for|except).*?:', re.DOTALL)
+no_used=re.compile(r'(?:\s*[#@\'"\n])')
+all_kongbai=re.compile(r'\s+')
 extend_keyword=re.compile('(ctypedef|cdef)')
-all_kongbai=re.compile(r'(?:\s+)')
-left_value_express=re.compile(r'([_\w,]+)\s*[+\-*/:=]{1,2}\s*(.+)', re.DOTALL)
+jinghaozhushi=re.compile(r'\s*#')
+left_value_express=re.compile(r'\s*([^=+\-/:]+)\s*[+\-*/:=]{1,2}\s*(.+)', re.DOTALL)
+left_value_fuzhi_express=re.compile(r'\s*([^=+\-/:]+)\s*[:=]\s*(.+)', re.DOTALL)
 declare_var=re.compile('([^=]+)(=.+)?',re.DOTALL)
 memoryview_=re.compile(r'\[[^:]*:[^\]]*\]', re.DOTALL)
 shuzu=re.compile(r'\[\s*([0-9]*)\s*\]',re.DOTALL)
 name_=re.compile(r'[_\w]+',re.DOTALL)
 fanxing=re.compile(r'\[.+\]',re.DOTALL)
-words_=re.compile(r'[\w_]+')
+words_=re.compile(r'[\w_]+',re.DOTALL)
 nogil_=re.compile('nogil')
 #
 model_enter_block_keywords=set(['cdef','cpdef','def'])
@@ -81,27 +86,26 @@ _array='array'
 _memoryview='memoryview'
 _nogil='nogil'
 
+
 #-----------------------------------------------------------------------------------------------------------------------
 
 class Model:
     __slots__ = ('name', 'path', 'suffix', 'classes', 'funcs', 'vars', 'c_declare_vars','types', 'cimport', 'from_cimport', 'includes')
     def __init__(self, name:str, path:str, suffix:str, ):
         self.name, self.path, self.suffix = name, path, suffix
-        self.funcs, self.vars, self.cimport, self.from_cimport, self.includes = {},{},{},{},[]
+        self.funcs, self.vars, self.cimport, self.from_cimport, self.includes = {},[],{},{},[]
+        self.classes={}
         self.types={}
         self.c_declare_vars={}
+    def cdef_line_func(self, line: str,  model):
+        return decode_cdef_line(line, self.c_declare_vars)
 
 def create_func(rr:re.Match, parent_vars_symbol_table: dict) :
     modifier_text, type_and_name_text, args_text, suffix_text = rr.groups()
     modifier = tuple(words_.findall(modifier_text))
     return_type, func_name = get_func_return_type_and_name(type_and_name_text, modifier)
-    args_text_ = cut.cut_douhao_and_strip(args_text)
     func = Func(func_name, return_type, args_text, suffix_text)
     parent_vars_symbol_table[func_name] = func
-    for arg_text in args_text_:
-        tt, var_name, _ = get_type_and_name(arg_text)
-        if var_name:  # 不是(a,b,*,c,d)中的*
-            func.vars[var_name] = tt
     return func
 
 
@@ -109,9 +113,12 @@ class Func:
     __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil', 'c_declare_vars', 'vars')
     def __init__(self, name:str, return_type: str, args_text: str, suffix_text:str):
         self.name, self.return_type, self.args_text, self.suffix_text = name, return_type, args_text, suffix_text
-        args = {}
-        get_cdef_func_args(self.args_text, args)
-        self.c_declare_vars, self.vars= args,  copy.deepcopy(args)
+        if args_text:
+            args = {}
+            get_cdef_func_args(self.args_text, args)
+            self.c_declare_vars, self.vars= args,  list(args.keys())
+        else:
+            self.c_declare_vars, self.vars = {}, []
         if nogil_.search(suffix_text):
             self.nogil=True
         else:
@@ -141,29 +148,42 @@ class FuncSignature:
 
 
 class CimportModel:
-    __slots__ = ('from_text', 'name', 'path', 'from_text_is_pxd')
+    __slots__ = ('from_text', 'name', 'path', 'from_text_is_pxd','is_cython_model','from_cython_model')
     def __init__(self, from_text:str, name:str):
         self.from_text, self.name = from_text, name
         levels = from_text.replace('.', '/')
-        if os.path.exists(levels):
-            path = levels
+        path=levels
+        if self.check_cimport_model_exists(path):
+            self.is_cython_model=False
         else:
             pp = get_cython_include_path()
             path = os.path.join(pp, levels)
-            if os.path.exists(levels):
-                pass
+            if self.check_cimport_model_exists(path):
+                self.is_cython_model=False
             else:
-                raise FileNotFoundError
+                froms = from_text.split('.')
+                if froms[0]=='cython':
+                    self.path=''
+                    self.from_cython_model=True
+                elif name=='cython' and not from_text:
+                    self.path=''
+                    self.is_cython_model=True
+                else:
+                    raise FileNotFoundError
+
+    def check_cimport_model_exists(self, path):
         if os.path.isdir(path):
             self.path=path
             self.from_text_is_pxd=False
+            return True
         else:
             pxd =path+'.pxd'
             if os.path.exists(pxd):
                 self.path=pxd
                 self.from_text_is_pxd=True
+                return True
             else:
-                raise FileNotFoundError
+                return False
 
 
 class Ctype:
@@ -238,12 +258,12 @@ class Fused:
     def enter(self, code_lines:list, start_i:int, l:int, lines:list, model:Model, line_func ):
         for i in range(start_i, l):
             line = code_lines[i]
-            code_line, suojin_len, start_lineno, end_lino = line
+            code_line, suojin_len, start_lineno, end_lineno = line
             if suojin_len > 0:  # 仍在块中
                 lines[i] = (line, line_func(line, model), model)
 
 #-----------------------------------------------------------------------------------------------------------------------
-timeout=5000
+timeout=3*10**10
 def enter_pyx(folder:str, filename:str):
     assert filename[-4:]=='.pyx'
     name=filename[:-4]
@@ -259,61 +279,201 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
     i=0
     l=len(code_lines)
     lines = [None] * l
+    log=lines.copy()
     t0=time.time()
+    in_commemt_block=[False]
     pre_i, pre_enter = 0, None
     while (i<l):
-        print(i)
+        #print(i)
         line = code_lines[i]
-        code_line, suojin_len, _, __ = line
-        assert suojin_len==0
-        r=cdef_func.match(code_line)
-        t1 = time.time()
-        if t1 - t0 > timeout: raise TimeoutError
-        if r:
-            lines[i] = (model, None, line)
-            func=create_func(r, model.funcs)
-            i=enter_func_block(code_lines, suojin_len, i+1, l, lines, func, model)
-            assert pre_i < i
-            pre_i, pre_enter = i, 0
-            continue
-        #
-        r=cdef_class.match(code_line)
-        if r:
-            _, type, name = r.groups()
-            lines[i]=(model, None, line)
-            cls=CClass(name, type)
-            i=enter_class_block(code_lines, suojin_len, i+1, l, lines, cls, model)
-            assert pre_i < i
-            pre_i, pre_enter = i, 1
-            continue
-        r=cdef_struct_union_enum_fused.match(code_line)
-        if r:
-            i=enter_struct_union_enum_fused_block(r, code_lines, suojin_len, i+1, l, lines, model)
-            assert pre_i < i
-            pre_i, pre_enter = i, 2
-            continue
-        #
-        r=cdef_extend_from.match(code_line)
-        if r:
-            lines[i] = (model, None, line)
-            i=enter_extend_block(code_lines, suojin_len, i+1, l, lines, model)
-            assert pre_i < i
-            pre_i, pre_enter = i, 3
-            continue
-        #
-        comment_line_func(code_line, model.c_declare_vars, model.vars, model)
-        i+=1
-        assert pre_i<i
-        pre_i, pre_enter = i, 4
+        code_line, suojin_len, start_lineno, end_lineno = line
+        if suojin_len==0:
+            #
+            t1 = time.time()
+            if t1 - t0 > timeout: raise TimeoutError
+            #
+            r=no_used.match(code_line)
+            if r:
+                i+=1
+                continue
+            #
+            r = cdef_class.match(code_line)
+            if r:
+                _, type, name, __ = r.groups()
+                lines[i]=(model, None, line)
+                log[i]=1
+                cls=CClass(name, type)
+                model.classes[name]=cls
+                i=enter_class_block(code_lines, suojin_len, i+1, l, lines, cls, model, start_lineno, end_lineno, log)
+                assert pre_i < i
+                pre_i, pre_enter = i, 1
+                continue
+            #
+            r=cdef_func.match(code_line)
+            if r:
+                lines[i] = (model, None, line)
+                log[i]=0
+                func=create_func(r, model.funcs)
+                i=enter_func_block(code_lines, suojin_len, i+1, l, lines, func, model)
+                assert pre_i < i
+                pre_i, pre_enter = i, 0
+                continue
+            #
+            r=cdef_struct_union_enum_fused.match(code_line)
+            if r:
+                log[i] = 2
+                i=enter_struct_union_enum_fused_block(r, code_lines, suojin_len, i+1, l, lines, model, log, 20)
+                assert pre_i < i
+                pre_i, pre_enter = i, 2
+                continue
+            #
+            r=cdef_extend_from.match(code_line)
+            if r:
+                log[i] = 3
+                lines[i] = (model, None, line)
+                i=enter_extend_block(code_lines, suojin_len, i+1, l, lines, model, log)
+                assert pre_i < i
+                pre_i, pre_enter = i, 3
+                continue
+            #
+            r=cdef_block.match(code_line)
+            if r:
+                log[i] = 4
+                lines[i] = (model, None, line)
+                i=enter_block(code_lines, suojin_len,  model.cdef_line_func, i+1, l, lines, model,  model, log, 40)
+                pre_i, pre_enter = i, 4
+                continue
+            #
+            r=comment_block.match(code_line)
+            if r:
+                log[i] = 5
+                rr=new_var_line_or_nogil(code_line, model.c_declare_vars, model.vars)
+                lines[i] = (model, rr, line)
+                i=model_enter_comment_block(code_lines, suojin_len, i+1, l, lines, model)
+                pre_i, pre_enter = i, 5
+                continue
+            #
+            r = cdef_line.match(code_line)
+            if r:
+                log[i] = 6
+                content = r.groups()[0]
+                var_names = decode_cdef_line(content, model.c_declare_vars)
+                model.vars += var_names
+                lines[i]=(model, var_names, line)
+                pre_i, pre_enter = i, 6
+                i+=1
+                continue
+            #
+            r = left_value_express.match(code_line)
+            if r:
+                log[i] = 13
+                names = get_left_express(r)
+                model.vars += names
+                lines[i]=(model, names, line)
+                pre_i, pre_enter = i, 13
+                i+=1
+                continue
+            #
+            r = ctypedef_func0.match(code_line)
+            if r:
+                log[i] = 11
+                get_ctypedef_func0_signature(rr, model.types)
+                pre_i, pre_enter = i, 11
+                i += 1
+                continue
+            #
+            r = ctypedef_func1.match(code_line)
+            if r:
+                log[i] = 12
+                get_ctypedef_func1_signature(rr, model.types)
+                pre_i, pre_enter = i, 12
+                i += 1
+                continue
+            #
+            r=ctypedef_bieming.match( code_line)
+            if r:
+                log[i]=10
+                get_ctypede_type_bieming(r, model.types)
+                lines[i] = (model, None, line)
+                pre_i, pre_enter = i, 10
+                i+=1
+                continue
+            #
+            r = import_.match(code_line)
+            if r:
+                log[i] = 7
+                cimport, names_text = r.groups()
+                if cimport == _cimport:
+                    names = get_as_biemings(names_text)
+                    ns=[]
+                    for bieming, name in names:
+                        model.from_cimport[bieming] = CimportModel('', name, )
+                        ns.append(name)
+                    lines[i] = (model, ns, line)
+                else:
+                    lines[i] = (model, None, line)
+                pre_i, pre_enter = i, 7
+                i += 1
+                continue
+            #
+            r = from_import.match(code_line)
+            if r:
+                log[i] = 8
+                from_text, cimport, names_text = r.groups()
+                if cimport == _cimport:
+                    names = get_as_biemings(names_text)
+                    ns=[]
+                    for bieming, name in names:
+                        model.from_cimport[bieming] = CimportModel(from_text, name)
+                        ns.append(name)
+                        lines[i] = (model, ns, line)
+                    else:
+                        lines[i] = (model, None, line)
+                pre_i, pre_enter = i, 8
+                i += 1
+                continue
+            #
+            r = include.match(code_line)
+            if r:
+                log[i] = 9
+                name = r.groups()[0]
+                model.includes.append(name)
+                lines[i]=(model, None, line)
+                pre_i, pre_enter = i, 9
+                i += 1
+                continue
+            #
+            if not code_line or all_kongbai.fullmatch(code_line):
+                pass
+            else:
+                print(f'该行认为无需管， 物理行开始和结束{start_lineno}、{end_lineno}, 内容：{code_line}，逻辑行号:{i}' )
+            i+=1
+        else:
+            if not check_code_line_have_content(code_line):
+                i+=1
+            else:
+                raise AssertionError
     return lines
 
 
+def model_enter_comment_block( code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, model:Model):
+    i =start_i
+    while (i < l):
+        line = code_lines[i]
+        code_line, suojin_len, start_lineno, end_lineno = line
+        if suojin_len>sj_len:
+            r=new_var_line_or_nogil(code_line, model.c_declare_vars, model.vars)
+            lines[i]=(model, r, line)
+            i+=1
+        else:
+            return i
 
-def enter_func_block( code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, func:Func, model:Model ):
+def enter_func_block( code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, func:Func, model:Model):
     i=start_i
     t0 = time.time()
     while(i<l):
         line=code_lines[i]
+        #print(i, line)
         code_line, suojin_len, _, __ = line
         if suojin_len>sj_len:
             t1 = time.time()
@@ -331,22 +491,23 @@ def enter_func_block( code_lines: iter, sj_len: int, start_i: int, l: int, lines
                         i=ii
                         break
                 continue
-
             else:
-                comment_line_func(code_line, func.c_declare_vars, func.vars, model)
+                rr=new_var_line_or_nogil(code_line, func.c_declare_vars, func.vars)
+                lines[i]=(func, rr, line)
+                #comment_line_func(code_line, func.c_declare_vars, func.vars, model)
                 i+=1
         else:
             return i
     return l
 
-def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, cls:CClass, model:Model )->int:
+def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, cls:CClass, model:Model, s_lineno:int, e_lineno:int, log:list )->int:
     i = start_i
     t0 = time.time()
     pre_i, pre_enter=0, None
     while (i < l):
         #print(i)
         line = code_lines[i]
-        code_line, suojin_len, _, __ = line
+        code_line, suojin_len, start_lineno, end_lineno = line
         t1 = time.time()
         if t1 - t0 > timeout:
             raise TimeoutError
@@ -355,18 +516,20 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
             r=cdef_block.match(code_line)
             if r:
                 public=r.groups()[0]
+                log[i] = 10
                 if public == 'readonly':
                     i=enter_block(code_lines, suojin_len, cls.readonly_line_func, i+1,l, lines, cls, model)
                 elif public == 'public':
                     i=enter_block(code_lines, suojin_len, cls.public_line_func, i+1,l, lines, cls, model)
                 else:
-                    i=enter_block(code_lines, suojin_len, cls.private_line_func, i+1,l, lines, cls, model)
+                    i=enter_block(code_lines, suojin_len, cls.private_line_func, i+1,l, lines, cls, model, log, 100)
                 assert pre_i < i
                 pre_i, pre_enter=i, 0
                 continue
             #
             r=cdef_func.match(code_line)
             if r:
+                log[i] = 11
                 func=create_func(r, cls.funcs)
                 i=enter_func_block(code_lines, suojin_len, i+1, l, lines, func, model)
                 assert pre_i < i
@@ -375,6 +538,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
             #
             r = cdef_attr_line.match(code_line)
             if r:
+                log[i] = 12
                 public, content = r.groups()
                 if public == 'readonly':
                     attr_names = cls.readonly_line_func(code_line, model)
@@ -390,78 +554,62 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
             #
             r=no_used.match(code_line)
             if r:
+                log[i] = 13
                 i+=1
                 assert pre_i < i
                 pre_i, pre_enter = i, 3
                 continue
+            #
+            r= not check_code_line_have_content(code_line)
+            if r:
+                log[i] = 14
+                i+=1
+                assert pre_i < i
+                pre_i, pre_enter = i, 4
+                continue
             raise AssertionError
         else:
-            return i
+            if jinghaozhushi.match(code_line):
+                log[i] = 16
+                i+=1
+                continue
+            else:
+                log[i] = 15
+                return i
     return l
 
 
-def enter_struct_union_enum_fused_block( rr: re.Match, code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, model:Model )->int:
+def enter_struct_union_enum_fused_block( rr: re.Match, code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, model:Model, log:list, log_v:list )->int:
     block=get_struct_union_enum_fused_block(rr, model.types)
-    return enter_block(code_lines, sj_len, block.line_func, start_i, l, lines, block, model)
+    return enter_block(code_lines, sj_len, block.line_func, start_i, l, lines, block, model, log, log_v)
 
-
-def comment_line_func(code_line: str, c_declare_vars: dict, vars: dict, model:Model):
-    #
-    r=other_keywords.match(code_line)
-    if r:
-        return False
-    #
+def new_var_line_or_nogil(code_line: str, c_declare_vars: dict, vars: dict ):
     r = cdef_line.match(code_line)
     if r:
         content = r.groups()[0]
         var_names = decode_cdef_line(content, c_declare_vars)
+        vars += var_names
         return var_names
     #
     r = left_value_express.match(code_line)
     if r:
-        names=get_left_express(r, vars)
+        names = get_left_express(r)
+        vars += names
         return names
-    r=with_nogil.match(code_line)
+    #
+    r = with_nogil.match(code_line)
     if r:
         return _nogil
     #
     for keyword_re in (for_, with_, except_):
         r = keyword_re.match(code_line)
         if r:
-            d=r.groupdict()
+            d = r.groupdict()
             names = get_as_biemings(d['content'])
+            vars += names
             return [x[0] for x in names]
     #
-    r=import_.match(code_line)
-    if r:
-        cimport, names_text=r.groups()
-        if cimport:
-            names = get_as_biemings(names_text)
-            for bieming, name in names:
-                model.from_cimport[bieming]=CimportModel('', name, )
-            model.cimport.update(names)
-            return False
-    #
-    r=from_import.match(code_line)
-    if r:
-        from_text, cimport, names_text = r.groups()
-        if cimport:
-            names=get_as_biemings(names_text)
-            for bieming, name in names:
-                model.from_cimport[bieming]=CimportModel(from_text, name )
-            return False
-    #
-    r=global_.match(code_line)
-    if r:
-        name=r.groups()[0]
-        return [name]
-    #
-    r=include.match(code_line)
-    if r:
-        name=r.groups()[0]
-        model.includes.append(name)
-        return False
-    return False
+    return None
 
 d0={'struct':Struct, 'union': Union, 'enum':Enum, 'fused':Fused}
 def get_struct_union_enum_fused_block(rr: re.Match, type_symbol_table: dict):
@@ -472,17 +620,25 @@ def get_struct_union_enum_fused_block(rr: re.Match, type_symbol_table: dict):
     type_symbol_table[name] =block
     return block
 
-def enter_block( code_lines: iter, sj_len: int, line_func:callable,  start_i: int, l: int, lines:list, block, model ) ->int:
+def enter_block( code_lines: iter, sj_len: int, line_func:callable,  start_i: int, l: int, lines:list, block, model, log:list, log_v ) ->int:
     for i in range(start_i, l):
         line = code_lines[i]
-        code_line, suojin_len, _, __ = line
+        code_line, suojin_len, start_lineno, end_lineno = line
         if suojin_len > sj_len:
-            lines[i]=(block, line_func(code_line, model), code_line)
+            if check_code_line_have_content(code_line):
+                lines[i]=(block, line_func(code_line, model), code_line)
+                log[i]=log_v
         else:
             return i
     return l
 
-def enter_extend_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, lines:list, model:Model ):
+def check_code_line_have_content(code_line:str):
+    if all_kongbai.fullmatch(code_line) or jinghaozhushi.match(code_line):
+        return False
+    else:
+        return True
+
+def enter_extend_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, lines:list, model:Model, log:list ):
     i=start_i
     t0 = time.time()
     while(i<l):
@@ -491,11 +647,13 @@ def enter_extend_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
         line=code_lines[i]
         code_line, suojin_len, _, __ = line
         if suojin_len>sj_len:
-            if extend_no_used.match(code_line):continue
+            if no_used.match(code_line):continue
             #
             r=extend_struct_union_enum_fused.match(code_line)
             if r:
-                enter_struct_union_enum_fused_block(r, code_lines, sj_len, start_i, l, lines, model)
+                i=enter_struct_union_enum_fused_block(r, code_lines, sj_len, start_i, l, lines, model)
+                lines[i]=(model, r, code_line)
+                log[i] = 100
                 continue
             #
             r=extend_func.match(code_line)
@@ -503,6 +661,8 @@ def enter_extend_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
                 get_extend_func_signature(r, model.funcs)
                 #get_cdef_func_signature(r, model.funcs, {})
                 lines[i]=(model, r, code_line)
+                log[i]=101
+                i+=1
                 continue
             #
             r=cdef_func.match(code_line)
@@ -510,13 +670,15 @@ def enter_extend_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
                 get_extend_func_signature(r, model.funcs)
                 lines[i]=(model, r, code_line)
                 i=break_block(code_lines, sj_len, i+1, l)
+                log[i] = 102
+                continue
         else:
             return i
     return l
 
 def get_ctypede_type_bieming(rr :re.Match, type_symbol_table: dict):
-    content = rr.groups()
-    words_xinghaocount_xinghaos_fangkuohao_stat_s = cut.split_by_fangkuohao_and_del_kongbai(content)
+    content = rr.groups()[0]
+    words_xinghaocount_xinghaos_fangkuohao_stat_s = cut.split_by_fangkuohao_and_del_yuan_kuohao(content)
     l = len(words_xinghaocount_xinghaos_fangkuohao_stat_s)
     if l==2:
         t, name, _= get_2_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s)
@@ -543,7 +705,7 @@ def get_ctypedef_func1_signature(rr: re.Match, type_symbol_table: dict):
     modifier_text, type_text, name_text, args_text, suffix_text = rr.groups()
     modifier = tuple(words_.findall(modifier_text))
     #
-    words_xinghaocount_xinghaos_fangkuohao_stat_s = cut.split_by_fangkuohao_and_del_kongbai(type_text)
+    words_xinghaocount_xinghaos_fangkuohao_stat_s = cut.split_by_fangkuohao_and_del_yuan_kuohao(type_text)
     t, name, _ = get_1_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s)
     #
     name = name_text.strip()
@@ -570,11 +732,18 @@ strip_type_zhushi=re.compile('')
 def get_cdef_func_args(args_text: str, symbol_table:dict): #注意ctypedef的不能用这个
     #print(args_text, '////')
     type_and_names=cut.cut_douhao_and_strip(args_text)
-    for type_and_name in type_and_names:
+    for type_and_name_text in type_and_names:
+        r=left_value_fuzhi_express.match(type_and_name_text)
+        if r:
+            left, right = r.groups()
+            type_and_name = left
+        else:
+            type_and_name=type_and_name_text
         t, name, _=get_type_and_name(type_and_name)
         symbol_table[name]=t
 
-def get_left_express(rr: re.Match, symbol_table:dict) ->list[str]:
+
+def get_left_express(rr: re.Match) ->list[str]:
     left, right=rr.groups()
     vars=words_.findall(left)
     return vars
@@ -591,14 +760,17 @@ def decode_cdef_line(line: str, symbol_table: dict) ->list[str]:
     if (type(shared_type) is Ctype and not shared_type.memoryview):
         for i in range(1, l):
             text = vars[i]
-            r = left_value_express.search(text)
-            if r:
-                left, right = r.groups()
+            if jinghaozhushi.match(text):
+                continue
             else:
-                left = words_.findall(text)
-                assert len(left)==1
-                left=left[0]
-                right=None
+                r = left_value_fuzhi_express.match(text)
+                if r:
+                    left, right = r.groups()
+                else:
+                    left = words_.findall(text)
+                    assert len(left)==1
+                    left=left[0]
+                    right=None
             words_xinghaocount_xinghaos_fangkuohao_stat_s=cut.split_by_fangkuohao_and_del_yuan_kuohao(left)
             assert len(words_xinghaocount_xinghaos_fangkuohao_stat_s)==1
             words, xinghao_count, _, fangkuohao, stat = words_xinghaocount_xinghaos_fangkuohao_stat_s[0]
@@ -613,7 +785,7 @@ def decode_cdef_line(line: str, symbol_table: dict) ->list[str]:
     else: #memoryview 或者 cppclass
         for i in range(1, l):
             text = vars[i]
-            left, right = left_value_express.search(text).groups()
+            left, right = left_value_express.match(text).groups()
             names=words_.findall(left)
             assert len(names)==1
             name=names[0]
@@ -630,11 +802,12 @@ def get_func_return_type_and_name(text: str, modifier):
     t, name, _ = get_1_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s)
     return t, name
 
+bieming_re=re.compile('[_\w.]+',re.DOTALL)
 def get_as_biemings(content: str) ->list[tuple[str,str]]:
     codens=cut.cut_douhao_and_strip(content)
     l=[]
     for coden in codens:
-        tokens=words_.findall(coden)
+        tokens=bieming_re.findall(coden)
         if len(tokens)==1:
             name=tokens[0]
             l.append((name,name))
@@ -763,8 +936,9 @@ if __name__ == '__main__':
     filenames= os.listdir(folder)
     for filename in filenames:
         if '.pyx'==filename[-4:]:
+            print('start,', filename)
             lines=enter_pyx(folder, filename)
-            print('ok,', filename)
+
 
 
 # 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助

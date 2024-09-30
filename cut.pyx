@@ -269,7 +269,7 @@ cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
         # i是第一个空白字符的位置
         while(i<l):
             c = t[i]
-            #print(i, c, '---', text)
+            #print('cut douhao ', i, l, text)
             if c != left_kuohao0 and c != left_kuohao1 and c != left_kuohao2:
                 pass
             else:
@@ -279,24 +279,30 @@ cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
             if c != dyh and c != syh:
                 pass
             else:
+                #print('cut douhao yinhao', i, chr(c), l, text)
                 i = find_yh_str(t, i + 1, l, c, &_)
                 continue
             #
             if c!=douhao:
                 pass
             else: #遇见逗号，提取两个逗号中间的文本，i是逗号的位置
-                end=trace_find_no_kongbai(t, i-1) +1
-                s=sub_string_and_del_xiahuaxian_and_del_hh(text, start, end)
-                ll.append(s)
+                end=trace_find_no_kongbai(t, i-1,l) +1
+                if end!=l: #全都是空白
+                    s=sub_string_and_del_xiahuaxian_and_del_hh(text, start, end)
+                    ll.append(s)
+                else:
+                    pass
                 start=i+1
                 i+=1
                 break
             i+=1
     #把最后一个逗号到最后一个字符之间的文本给提取
-    end=trace_find_no_kongbai(t,l-1)+1
-    if start<end:
-        s = sub_string_and_del_xiahuaxian_and_del_hh(text, start, end)
-        ll.append(s)
+    end=trace_find_no_kongbai(t,l-1,l)+1
+    if end!=l:
+        if start<end: #全都是空白
+            s = sub_string_and_del_xiahuaxian_and_del_hh(text, start, end)
+            ll.append(s)
+    else:pass
     return ll
 
 cdef sub_string_and_del_xiahuaxian_and_del_hh(unicode text, uint start, uint end):
@@ -322,7 +328,7 @@ cdef _sub_string_and_del_xiahuaxian_and_del_hh(pyucs* t, uint l):
             t[i]==kongge
 
 
-cdef uint trace_find_no_kongbai(pyucs* t, uint i,):
+cdef uint trace_find_no_kongbai(pyucs* t, uint i, uint l):
     cdef:
         pyucs c
     while(i>0):
@@ -333,7 +339,7 @@ cdef uint trace_find_no_kongbai(pyucs* t, uint i,):
             return i
     c = t[0]
     if c == kongge or c == tab or c == hh:
-        raise AssertionError
+        return l
     else:
         return 0
 
@@ -367,12 +373,15 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
         object lts, lte
     lts=lte=1
     while(i<l):
+        #print('cut line 0', i, l, line_text)
         c=t[i]
         #
         if c!=left_kuohao0 and c!=left_kuohao1 and c!=left_kuohao2:
             pass
         else:
+            #print('before kuohao', i, l, line_text)
             i = find_kuohao(t, i + 1, l, &line_text)
+            #print('after kuohao', i, l, line_text)
             continue
         #
         if c!=dyh and c!=syh:
@@ -385,8 +394,11 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
             pass
         else:
             lte=line_text
+            ll.append((PyUnicode_Substring(text, start, i), suojin, lts, lte))
+            start=i
             i+=1
             while(i<l):
+                #print('cut line jinghao', i)
                 if t[i]!=hh:
                     i+=1
                 else:
@@ -411,6 +423,7 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
             if want_hh(t, i, l):
                 i += 1
                 while (i < l):
+                    #print('cut line hh', i)
                     if t[i] == hh:
                         line_text+=1
                         i += 1
@@ -438,14 +451,16 @@ cdef inline uint find_multi_hh(pyucs* t, uint i, uint l):
 
 cdef bint want_hh(pyucs* t, uint i, uint l):
     cdef uint c, ii
-    while(0<i):
-        c=t[i]
-        if c==kongge or c==tab or c==kongbai0:
-            i-=1
-        elif c==xhx:
-            return False
-        else:
-            return True
+    if i>0:
+        i-=1
+        while(0<i):
+            c=t[i]
+            if c==kongge or c==tab or c==kongbai0:
+                i-=1
+            elif c==xhx:
+                return False
+            else:
+                return True
     #
     c = t[0]
     if c == xhx:
@@ -483,29 +498,39 @@ cdef uint find_kuohao(pyucs* t, uint i, uint l, uint* line_text):
                 if c!=dyh and c!=syh:
                     line_text_try_add_1(c, line_text)
                 else:
+                    #print('before find yinhao', i, chr(c), l)
                     i=find_yh_str(t, i+1, l, c, line_text)
+                    #print('after find yinhao', i, chr(c), l)
                     continue
             else:
                 left_kuohao_count-=1
+                #print('left kuohao count',left_kuohao_count)
                 if left_kuohao_count==0:
                     return i+1
         else:
             left_kuohao_count +=1
         i+=1
+    return l
 
 cdef uint find_yh_str(pyucs* t, uint i, uint l, pyucs left_yh, uint* line_text):
     cdef:
         pyucs c
     if l-i>2:
-        if t[i]!=left_yh:
+        c=t[i]
+        if c!=left_yh:
+            #print('yinhao 2 no',chr(c), i)
             line_text_try_add_1(t[i], line_text)
             return find_no_multi_line_kuohao_str(t, i+1, l, left_yh, line_text)
-        else:
+        else: # ''，看是空字符串''还是三引号'''
+            #print('yinhao2 yes', i)
             i+=1
-            if t[i]!=left_yh:
+            c=t[i]
+            if c!=left_yh: #空字符串''
+                #print('yinhao3 no',chr(c), i)
                 line_text_try_add_1(t[i], line_text)
-                return find_no_multi_line_kuohao_str(t, i + 1, l, left_yh, line_text)
+                return i
             else: #三引号'''
+                #print('yinhao3 yes',chr(c), i)
                 while(i<l):
                     c=t[i]
                     if c!=left_yh:
