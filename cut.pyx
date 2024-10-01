@@ -264,7 +264,13 @@ cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
         list ll=[]
     while (i < l):
         #跳过一段连续空白
-        i=find_kongbai(t,i,l)
+        c = t[i]
+        while (c == kongge or c == tab or c==hh):
+            i += 1
+            if i<l:
+                c = t[i]
+            else:
+                return ll
         start=i
         # i是第一个空白字符的位置
         while(i<l):

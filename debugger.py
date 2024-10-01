@@ -31,7 +31,7 @@ extend_struct_union_enum_fused=cdef_struct_union_enum_fused
 cdef_extend_from=re.compile(r'\s*cdef\s+(?P<public>public\s+)?extend\s+from(?P<name>.+?):', re.DOTALL)
 ctypedef_bieming=re.compile(r'\s*ctypedef\s+(?P<content>[^()]+)',re.DOTALL)
 from_import=re.compile(r'\s*from\s+(.+?)\s+(c?import)(?P<content>.+)', re.DOTALL)
-with_=re.compile(r'\s*with\s+(.+):', re.DOTALL)
+with_=re.compile(r'\s*with\s+(?P<content>.+):', re.DOTALL)
 with_nogil=re.compile(r'\s*with\s+nogil\s*:')
 import_=re.compile(r'\s*(c?import)\s+(?P<content>.+)', re.DOTALL)
 func_name_and_arg_and_suffix=rf'(?P<type_and_name>[^()]+){func_args_and_suffix}'
@@ -91,6 +91,10 @@ _nogil='nogil'
 class M:
     def __str__(self):
         return f'{self.name}: {type(self).__name__}'
+    def __repr__(self):
+        return self.__str__()
+    def __hash__(self):
+        return hash(self.name)
 
 
 def create_func(rr:re.Match, parent_vars_symbol_table: dict) :
@@ -190,7 +194,7 @@ class Ctype:
     def __hash__(self):
         return hash(self.name)
     def __str__(self):
-        return self.base_type_name
+        return str(self.base_type_name)
     def __add__(self, ptr_level: list) :
         assert not self.memoryview
         return Ctype( self.base_type_name, self.modifiers, ptr_level+self.ptr_levels, False)
@@ -261,20 +265,20 @@ class Fused(M):
                 lines[i] = (line, line_func(line, model), model)
 
 class Model(M):
-    __slots__ = ('name', 'path', 'suffix', 'classes', 'funcs', 'vars', 'c_declare_vars','types',  'from_cimport', 'includes', 'all_vars_type','log')
+    __slots__ = ('name', 'path', 'suffix', 'classes', 'funcs', 'vars', 'c_declare_vars','types',  'from_cimport', 'includes', 'all_appeared_base_type','log','lines')
     def __init__(self, name:str, path:str, suffix:str ):
         self.name, self.path, self.suffix = name, path, suffix
         self.funcs, self.vars, self.from_cimport, self.includes = {},[],{},[]
         self.classes={}
         self.types={}
         self.c_declare_vars={}
-        self.all_vars_type=set()
+        self.all_appared_base_type=set()
     def cdef_line_func(self, line: str,  model):
         return decode_cdef_line(line, self.c_declare_vars)
     def get_model_c_decalre_var_types(self, ):
         all_base_type_names: set = set()
-        get_cdef_func_args(self.vars, all_base_type_names)
-        return all_base_type_names
+        get_all_func_c_decalre_var_types(self.funcs.values(), all_base_type_names)
+        self.all_appeared_base_type=all_base_type_names
 
 builtin_ctypes=['void','bint', 'char', 'signed char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long', 'long long', 'unsigned long long', 'float', 'double', 'long double', 'float complex', 'double complex', 'long double complex', 'size_t', 'Py_ssize_t', 'Py_hash_t', 'Py_UCS4','Py_Unicode']
 builtin_cpy_types=['list','set','tuple','dict','str','unicode','bytes','bytearray','object']
@@ -286,11 +290,13 @@ timeout=3*10**10
 def get_all_func_c_decalre_var_types(funcs, all_base_type_names: set):
     func: Func
     for func in funcs:
-        get_all_func_c_decalre_var_types(func.vars, all_base_type_names)
+        get_all_c_declare_var_types(func.c_declare_vars.values(), all_base_type_names)
 def get_all_c_declare_var_types(types, all_base_type_names:set):
     t: Ctype
     for t in types: # t: Ctype
-        all_base_type_names.add(t.base_type_name)
+        if isinstance(t, Ctype):
+            all_base_type_names.add(t.base_type_name)
+
 
 
 def enter_pyx(folder:str, filename:str):
@@ -302,7 +308,9 @@ def enter_pyx(folder:str, filename:str):
     text=f.read()
     code_lines=cut.cut_line(text)
     lines=enter_model_block(code_lines, model)
-    return model, lines
+    model.lines=lines
+    model.get_model_c_decalre_var_types()
+    return model
 
 def enter_model_block( code_lines: iter,  model:Model )->int:
     i=0
@@ -721,6 +729,7 @@ def get_ctypedef_func0_signature(rr: re.Match, type_symbol_table: dict):
     modifier_text, type_and_name_text, args_text, suffix_text= rr.groups()
     modifier = tuple(words_.findall(modifier_text))
     return_type, name = get_func_return_type_and_name(type_and_name_text, modifier)
+    name = (name.strip(),)
     if return_type is object: assert not modifier
     t=FuncSignature(name, return_type, args_text, suffix_text)
     type_symbol_table[name]=t
@@ -732,9 +741,10 @@ def get_ctypedef_func1_signature(rr: re.Match, type_symbol_table: dict):
     modifier = tuple(words_.findall(modifier_text))
     #
     words_xinghaocount_xinghaos_fangkuohao_stat_s = cut.split_by_fangkuohao_and_del_yuan_kuohao(type_text)
-    t, name, _ = get_1_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s)
+    return_type, name, _ = get_1_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s)
     #
-    name = name_text.strip()
+    name = (name_text.strip(),)
+    t=FuncSignature(name, return_type, args_text, suffix_text)
     #
     type_symbol_table[name]=t
 
@@ -960,31 +970,71 @@ def break_block(code_lines:list, sj_len:int, start_i:int, l:int, ):
 def get_folder_and_filename(filepath:str):
     folder, filename = os.path.split(filepath)
     return folder, filename
+
+def enter_folder_all_pyx(folder:str):
+    filenames=os.listdir(folder)
+    filepaths=[]
+    for filename in filenames:
+        if filename.endswith('.pyx'):
+            filepaths.append(os.path.join(folder, filename))
+    return enter_pyxs(filepaths)
+
 def enter_pyxs(file_paths):
     folders={}
     models=[]
+    entered_pyxs={}
     for filepath in file_paths:
-        folder, filename=get_folder_and_filename(filepath)
-        model, lines=enter_pyx(folder, filename)
-        models.append((model, lines))
-        if folder in folders.keys():
-            folders[folder].append(filename)
-        else:
-            folders[folder]=[filename]
-    return folders
+        if filepath not in entered_pyxs.keys():
+            folder, filename = get_folder_and_filename(filepath)
+            model = enter_pyx(folder, filename)
+            models.append(model)
+            entered_pyxs[filepath]=model
+    enter_models_include_pyxs(models, entered_pyxs)
+    return entered_pyxs
 
-def enter_model_include_pyxs(model:Model, entered_pyxs:set):pass
-
+def try_enter_pyx(path:str, entered_pyxs:dict):
+    if path not in entered_pyxs:
+        f, n = get_folder_and_filename(path)
+        model = enter_pyx(f, n)
+        entered_pyxs[path] = model
+        return model
+    else:
+        return None
+def enter_model_include_pyxs(model:Model, entered_pyxs:dict):
+    folder, name = get_folder_and_filename(model.path)
+    ps=[]
+    new_enter_model=[]
+    for include in model.includes:
+        path = os.path.join(folder, include)
+        ps.append((include, path))
+        model=try_enter_pyx(path, entered_pyxs)
+        if model:
+            new_enter_model.append(model)
+            model.includes=ps
+    return new_enter_model
+def enter_models_include_pyxs(models:list[Model], entered_pyxs:dict):
+    next_enter_models=[]
+    for model in models:
+        new_enter_models=enter_model_include_pyxs(model, entered_pyxs)
+        next_enter_models+=new_enter_models
+    while(next_enter_models):
+        next_enter_models1=[]
+        for model in models:
+            new_enter_models = enter_model_include_pyxs(model, entered_pyxs)
+            next_enter_models1 += new_enter_models
+        next_enter_models=next_enter_models1
+    
+        
 def modify_cython_model(pyx_paths):
     enter_pyxs(pyx_paths)
 
 if __name__ == '__main__':
     folder='D:/xrdb'
-    filenames= os.listdir(folder)
-    for filename in filenames:
-        if '.pyx'==filename[-4:]:
-            print('start,', filename)
-            lines=enter_pyx(folder, filename)
+    entered_pyxs=enter_folder_all_pyx(folder)
+    models=list(entered_pyxs.values())
+    for model in models:
+        print(model.all_appeared_base_type)
+        print(model.types)
 
 
 
