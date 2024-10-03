@@ -22,14 +22,14 @@ def open_utf8(path):
 
 func_args_and_suffix=r'\((?P<args>[^()]*)\)(?P<suffix>.*)'
 cdef_block=re.compile(r'\s*cdef(\s+(?P<public>public|private|readonly))?\s*:', re.DOTALL)
-cdef_line=re.compile(r'\s*cdef\s+(?P<content>.+)',re.DOTALL)
+cdef_line=re.compile(r'\s*cdef\s+(?P<content>.+)', re.DOTALL)
 cdef_attr_line=re.compile(r'\s*cdef\s+(?P<public>public|private|readonly)?\s*(?P<content>[^()]+)')
 cdef_struct_union_enum_fused=re.compile(r'\s*(?:cdef|ctypedef)\s+(?:.+?)?(?P<type>struct|union|enum|fused)\s+(?P<name>[^:]+)\s*:', re.DOTALL)
 cdef_class=re.compile(r'\s*(?P<cdef>cdef|ctypedef)?\s*(?P<cppclass>cpplass|class)\s+(?P<name>[_\w]+)(?P<jicheng>\s*\([^()]+\)\s*)?:', re.DOTALL)
-extend_class=re.compile(r'\s*(?:cdef|ctypedef)\s+(?:extern\s+)?(?P<cppclass>cpplass|class)\s+(?P<name>[_\w.]+\s*)(?P<c_struct>\[[_\w.\s]+\]\s*)?(?P<maohao>:)?', re.DOTALL)
-extend_struct_union_enum_fused=cdef_struct_union_enum_fused
-cdef_extend_from=re.compile(r'\s*cdef\s+(?P<public>public\s+)?extend\s+from(?P<name>.+?):', re.DOTALL)
-ctypedef_bieming=re.compile(r'\s*ctypedef\s+(?P<content>[^()]+)',re.DOTALL)
+extern_class=re.compile(r'\s*(?:cdef|ctypedef)\s+(?:extern\s+)?(?P<cppclass>cpplass|class)\s+(?P<name>[_\w.]+\s*)(?P<c_struct>\[[_\w.\s]+\]\s*)?(?P<maohao>:)?', re.DOTALL)
+extern_struct_union_enum_fused=re.compile(r'\s*(?:ctypedef)\s+(?:.+?)?(?P<type>struct|union|enum|fused)\s+(?P<name>[^:]+)', re.DOTALL)
+cdef_extern_from=re.compile(r'\s*cdef\s+(?P<public>public\s+)?extern\s+from\s+(?P<name>[^:]+):', re.DOTALL)
+ctypedef_bieming=re.compile(r'\s*ctypedef\s+(?P<content>[^()\'"]+)(?:\s*[\'"][^\'"]*[\'"])?',re.DOTALL)
 from_import=re.compile(r'\s*from\s+(.+?)\s+(c?import)(?P<content>.+)', re.DOTALL)
 with_=re.compile(r'\s*with\s+(?P<content>.+):', re.DOTALL)
 with_nogil=re.compile(r'\s*with\s+nogil\s*:')
@@ -37,7 +37,7 @@ import_=re.compile(r'\s*(c?import)\s+(?P<content>.+)', re.DOTALL)
 func_name_and_arg_and_suffix=rf'(?P<type_and_name>[^()]+){func_args_and_suffix}'
 modifiers_=r'(?P<modifier>(?:public\s+)?(?:api\s+)?(?:inline\s+)?(?:volatile\s+|const\s+){0,2})'
 func=modifiers_+func_name_and_arg_and_suffix
-extend_func=re.compile(r'\s*'+func, re.DOTALL)
+extern_func=re.compile(r'\s*'+func, re.DOTALL)
 cdef_func=re.compile(fr'\s*(?:async\s+)?(?:c?p?def)\s+{func}', re.DOTALL)
 async_func=re.compile(rf'\s*(?:async\s+)?(?:def)\s+{func_name_and_arg_and_suffix}', re.DOTALL)
 ctypedef_func0=re.compile(rf'\s*ctypedef\s+{func}', re.DOTALL)
@@ -51,7 +51,7 @@ need_keywords=re.compile(r'\s*(cdef|cpdef|ctypedef|def|with|for|from|cimport|inc
 comment_block=re.compile(r'\s*(if|elif|else|while|try|finally|match|case|with|for|except).*?:', re.DOTALL)
 no_used=re.compile(r'(?:\s*[#@\'"\n])', re.DOTALL)
 all_kongbai=re.compile(r'\s+')
-extend_keyword=re.compile('(ctypedef|cdef)')
+extern_keyword=re.compile('(ctypedef|cdef)')
 jinghaozhushi=re.compile(r'\s*#')
 left_value_express=re.compile(r'\s*([^=+\-/:]+)\s*[+\-*/:=]?=\s*(.+)', re.DOTALL)
 left_value_fuzhi_express=re.compile(r'\s*([^=+\-/:]+)\s*[:=]\s*(.+)', re.DOTALL)
@@ -146,6 +146,8 @@ class FuncSignature(M):
 
 class CimportModel(M):
     __slots__ = ('path','from_cython_model')
+    def __str__(self):
+        return str((self.path, self.from_cython_model))
     def __init__(self, path:tuple[str], from_cython_model:bool):
         self.path , self.from_cython_model= path, from_cython_model
 
@@ -229,8 +231,8 @@ class Fused(M):
 
 class Model(M):
     __slots__ = ('name', 'path', 'suffix', 'classes', 'funcs', 'vars', 'c_declare_vars','defind_types', 'cimport_bieming',
-                 'from_cimport', 'includes', 'includes_models','all_include_models', 'appeared_base_type',
-                 'all_appeared_base_type','all_defind_base_type','log','lines')
+                 'from_cimport', 'includes', 'includes_models','all_include_models', 'appeared_base_type', 'all_cimport_biemings',
+                 'all_appeared_base_type','all_defind_base_type', 'all_cimport_types','log','lines', 'all_from_cimports')
     def __init__(self, name:str, path:str, suffix:str ):
         self.name, self.path, self.suffix = name, path, suffix
         self.funcs, self.vars, self.from_cimport, self.includes = {},[],{},[]
@@ -238,10 +240,14 @@ class Model(M):
         self.cimport_bieming={}
         self.defind_types={}
         self.c_declare_vars={}
+        self.includes_models: set=set()
         self.all_appeared_base_type: set=None
         self.all_defind_base_type: set=None
         self.appeared_base_type: set=None
         self.all_include_models: set=None
+        self.all_cimport_types: dict=None
+        self.all_cimport_biemings: dict=None
+        self.all_from_cimports: dict=None
     def cdef_line_func(self, line: str,  model):
         return decode_cdef_line(line, self.c_declare_vars)
     def get_all_include_models(self):
@@ -278,12 +284,55 @@ class Model(M):
                 all_defind_base_type= all_defind_base_type.union(model.get_defind_type_names())
             self.all_defind_base_type=all_defind_base_type
         return self.all_defind_base_type
-    def get_cimport_types(self):
-        defind_types=self.get_all_defind_base_type()
-        appeard_types=self.get_appeared_base_type()
-        s=appeard_types - builtin_types
-        s -= defind_types
-        return s
+    def get_all_cimport_biemings(self):
+        if not self.all_cimport_biemings:
+            all_cimport_biemings=copy.deepcopy(self.cimport_bieming)
+            for model in self.all_include_models:
+                all_cimport_biemings.update(model.cimport_bieming)
+            self.all_cimport_biemings=all_cimport_biemings
+        return self.all_cimport_biemings
+    def get_all_from_cimports(self):
+        if not self.all_from_cimports:
+            all_from_cimports=copy.deepcopy(self.from_cimport)
+            for model in self.all_include_models:
+                all_from_cimports.update(model.from_cimport)
+            self.all_from_cimports=all_from_cimports
+        return self.all_from_cimports
+    def get_cimport_types(self, cache_pxd: dict):
+        if not self.all_cimport_types:
+            if self.suffix=='.pyx':
+                defind_types=self.get_all_defind_base_type()
+                appeard_types=self.get_appeared_base_type()
+                s=appeard_types - builtin_types
+                s -= defind_types
+                #
+                all_cimport_biemings=self.get_all_cimport_biemings()
+                all_from_cimports = self.get_all_from_cimports()
+                all_cimport_types={}
+                for bieming in s:
+                    assert len(bieming) == 1
+                    bm: str=tuple(bieming[0].split('.'))
+                    bm0=(bm[0],)
+                    type_name = all_cimport_biemings[bm0]
+                    from_text = all_from_cimports[type_name]
+                    path = '.'.join((from_text, type_name))
+                    pxd_path=get_cimport(path, cache_pxd)
+                    all_cimport_types[bieming]=pxd_path
+                self.all_cimport_types=all_cimport_types
+            elif self.suffix=='.pxd':
+                all_cimport_types = {}
+                for bieming, from_text in self.from_cimport.items():
+                    bm: str = tuple(bieming[0].split('.'))
+                    bm0 = (bieming,)
+                    type_name = self.cimport_bieming[bm0]
+                    path = '.'.join((from_text, type_name))
+                    pxd_path = get_cimport(path, cache_pxd)
+                    all_cimport_types[bieming] = pxd_path
+                self.all_cimport_types=all_cimport_types
+            else:
+                raise AssertionError
+        #
+        return self.all_cimport_types
         
     def check_define_type(self, type_name:str):
         if type_name in self.defind_types.keys():
@@ -294,10 +343,6 @@ class Model(M):
                     return True
             return False
 
-    def get_total_cimports(self, entered_): #本pyx的和递归include的
-        total=set()
-        for model in self.includes_models:
-            total += model.get_all_appeared_base_type
 
 
 
@@ -341,29 +386,29 @@ def try_get_pxd(path:str):
             return p, is_pxd
     return None, False
 
-def get_cimport(text, cimport_models:dict, cache_pxds:dict):
-    levels = text.replace('.', '/')
+def get_cimport(text, cache_pxds:dict):
+    levels = text.strip('.').split('.')
     assert len(levels)>1
     path=levels[:-1]
     name=levels[-1]
     #
     from_cython_model = False
-    p, is_pxd = try_get_pxd(path)
-    if is_pxd: # from_text是某个pxd文件，name是pxd里面的东西
+    p, is_pxd = try_get_pxd('/'.join(path))
+    if is_pxd: # p是pxd的路径
         if p not in cache_pxds.keys():
             cm=CimportModel(p, from_cython_model)
-            cimport_models[name]=cm
-            cache_pxds[path]=cm
+            cache_pxds[p]=cm
         else:
             pass
+        return p
     else:
         froms = text.split('.')
         if froms[0] == 'cython':
             p = 'cython'
             from_cython_model=True
             cm = CimportModel(p, from_cython_model)
-            cimport_models[name] = cm
-            cache_pxds[path] = cm
+            cache_pxds[p]=cm
+            return p
         else:
             raise FileNotFoundError
 
@@ -396,7 +441,8 @@ def enter_model_file(folder:str, filename:str, suffix:str):
     code_lines = cut.cut_line(text)
     lines = enter_model_block(code_lines, model)
     model.lines = lines
-    model.get_all_appeared_base_type()
+    if suffix=='.pyx':
+        model.get_all_appeared_base_type()
     return model
 
 def enter_model_block( code_lines: iter,  model:Model )->int:
@@ -434,6 +480,22 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
                 pre_i, pre_enter = i, 1
                 continue
             #
+            r = ctypedef_func0.match(code_line)
+            if r:
+                log[i] = 11
+                get_ctypedef_func0_signature(r, model.defind_types)
+                pre_i, pre_enter = i, 11
+                i += 1
+                continue
+            #
+            r = ctypedef_func1.match(code_line)
+            if r:
+                log[i] = 12
+                get_ctypedef_func1_signature(r, model.defind_types)
+                pre_i, pre_enter = i, 12
+                i += 1
+                continue
+            #
             r=cdef_func.match(code_line)
             if r:
                 lines[i] = (model, None, line)
@@ -452,11 +514,11 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
                 pre_i, pre_enter = i, 2
                 continue
             #
-            r=cdef_extend_from.match(code_line)
+            r=cdef_extern_from.match(code_line)
             if r:
                 log[i] = 3
                 lines[i] = (model, None, line)
-                i=enter_extend_block(code_lines, suojin_len, i+1, l, lines, model, log)
+                i=enter_extern_block(code_lines, suojin_len, i+1, l, lines, model, log)
                 assert pre_i < i
                 pre_i, pre_enter = i, 3
                 continue
@@ -508,22 +570,6 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
                 i+=1
                 continue
             #
-            r = ctypedef_func0.match(code_line)
-            if r:
-                log[i] = 11
-                get_ctypedef_func0_signature(r, model.defind_types)
-                pre_i, pre_enter = i, 11
-                i += 1
-                continue
-            #
-            r = ctypedef_func1.match(code_line)
-            if r:
-                log[i] = 12
-                get_ctypedef_func1_signature(r, model.defind_types)
-                pre_i, pre_enter = i, 12
-                i += 1
-                continue
-            #
             r = import_.match(code_line)
             if r:
                 log[i] = 7
@@ -532,7 +578,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
                     names = get_as_biemings(names_text)
                     ns=[]
                     for bieming, name in names:
-                        model.cimport_bieming[bieming]=name
+                        model.cimport_bieming[(bieming,)]=name
                         model.from_cimport[name] = ''
                         ns.append(name)
                 lines[i] = (model, None, line)
@@ -548,7 +594,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
                     names = get_as_biemings(names_text)
                     ns=[]
                     for bieming, name in names:
-                        model.cimport_bieming[bieming] = name
+                        model.cimport_bieming[(bieming,)] = name
                         model.from_cimport[name] = from_text
                         ns.append(name)
                 lines[i] = (model, None, line)
@@ -573,10 +619,9 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             i+=1
         else:
             if not check_code_line_have_content(code_line):
-                i+=1
+                i += 1
             else:
                 raise AssertionError
-    model
     return lines
 
 
@@ -762,42 +807,97 @@ def check_code_line_have_content(code_line:str):
     else:
         return True
 
-def enter_extend_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, lines:list, model:Model, log:list ):
+extern_const_var_defind=re.compile('[_\w.\s]')
+ctypedef_class=re.compile('\s*ctypedef\s+(cppclass|class)\s+(?P<name>[_\w.]+)\s+(\[.+?\])?(:)?', re.DOTALL)
+def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, lines:list, model:Model, log:list ):
     i=start_i
     t0 = time.time()
     while(i<l):
+        print(i)
         t1 = time.time()
         if t1 - t0 > timeout: raise TimeoutError
         line=code_lines[i]
-        code_line, suojin_len, _, __ = line
+        code_line, suojin_len, start_lineno, end_lineno = line
         if suojin_len>sj_len:
-            if no_used.match(code_line):continue
+            if no_used.match(code_line):
+                i+=1
+                continue
             #
-            r=extend_struct_union_enum_fused.match(code_line)
+            r=cdef_struct_union_enum_fused.match(code_line)
             if r:
-                i=enter_struct_union_enum_fused_block(r, code_lines, sj_len, start_i, l, lines, model)
+                i=enter_struct_union_enum_fused_block(r, code_lines, suojin_len, i+1, l, lines, model, log, 1000)
                 lines[i]=(model, r, code_line)
                 log[i] = 100
                 continue
             #
-            r=extend_func.match(code_line)
+            r = extern_struct_union_enum_fused.match(code_line)
             if r:
-                get_extend_func_signature(r, model.funcs)
-                #get_cdef_func_signature(r, model.funcs, {})
+                # name, type= r.groups()
+                get_struct_union_enum_fused_block(r, model.defind_types)
+                i += 1
+                log[i] = 100
+                continue
+            #
+            r = ctypedef_func0.match(code_line)
+            if r:
+                log[i] = 11
+                get_ctypedef_func0_signature(r, model.defind_types)
+                i += 1
+                continue
+            #
+            r = ctypedef_func1.match(code_line)
+            if r:
+                log[i] = 12
+                get_ctypedef_func1_signature(r, model.defind_types)
+                i += 1
+                continue
+            #
+            r=extern_func.match(code_line)
+            if r:
+                get_extern_func_signature(r, model.funcs)
                 lines[i]=(model, r, code_line)
                 log[i]=101
                 i+=1
                 continue
             #
+            r = ctypedef_class.match(code_line)
+            if r:
+                type, name,_, __ = r.groups()
+                lines[i] = (model, None, line)
+                log[i] = 1
+                name = name.strip()
+                cls = CClass(name, type)
+                model.classes[name] = cls
+                i = enter_class_block(code_lines, suojin_len, i + 1, l, lines, cls, model, start_lineno, end_lineno,
+                                      log)
+                continue
+            #
             r=cdef_func.match(code_line)
             if r:
-                get_extend_func_signature(r, model.funcs)
+                get_extern_func_signature(r, model.funcs)
                 lines[i]=(model, r, code_line)
                 i=break_block(code_lines, sj_len, i+1, l)
                 log[i] = 102
                 continue
+            #
+            r = ctypedef_bieming.match(code_line)
+            if r:
+                log[i] = 10
+                get_ctypede_type_bieming(r, model.defind_types)
+                lines[i] = (model, None, line)
+                i += 1
+                continue
+            #
+            i+=1
+            '''if not check_code_line_have_content(code_line):
+                i+=1
+                continue
+            raise AssertionError'''
         else:
-            return i
+            if not check_code_line_have_content(code_line):
+                i+=1
+            else:
+                return i
     return l
 
 def get_ctypede_type_bieming(rr :re.Match, type_symbol_table: dict):
@@ -826,7 +926,7 @@ def get_ctypedef_func0_signature(rr: re.Match, type_symbol_table: dict):
     t=FuncSignature(name, return_type, args_text, suffix_text)
     type_symbol_table[name]=t
     #
-get_extend_func_signature=get_ctypedef_func0_signature
+get_extern_func_signature=get_ctypedef_func0_signature
 
 def get_ctypedef_func1_signature(rr: re.Match, type_symbol_table: dict):
     modifier_text, type_text, name_text, args_text, suffix_text = rr.groups()
@@ -1127,19 +1227,37 @@ def enter_models_include_pyxs(models:list[Model], entered_pyxs:dict):
         model.includes_models=includes_models
     return entered_pyxs
     
+def enter_pxds(pxd_paths):
+    d={}
+    for pxd_path in pxd_paths:
+        folder, filename = get_folder_and_filename(pxd_path)
+        pxd_model = enter_pxd(folder, filename)
+        d[pxd_path]=pxd_model
+    return d
+def get_pxds_next_pxds(pxds: dict):
+    while(True):
+        pxd_paths={}
+        for model in pxds.values():
+            model.get_cimport_types(pxd_paths)
+        if pxd_paths:
+            next_pxd_paths = set(pxd_paths.keys()) - set(pxds.keys())
+            new_pxds = enter_pxds(next_pxd_paths)
+            pxds.update(new_pxds)
+        else:
+            return pxds
 
-def modify_cython_model(pyx_paths):
-    enter_pyxs(pyx_paths)
 
 if __name__ == '__main__':
     folder='D:/xrdb'
     entered_pyxs=enter_folder_all_pyx(folder)
     models=list(entered_pyxs.values())
+    pxd_paths={}
     for model in models:
-        #print(model.all_appeared_base_type)
-        #print(model.get_all_defind_base_type())
-        print(model.get_cimport_types())
-
+        print(model.get_cimport_types(pxd_paths))
+    #print(pxd_paths)
+    pxds = enter_pxds(pxd_paths)
+    pxds = get_pxds_next_pxds(pxds)
+    print(pxds)
 
 
 # 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
