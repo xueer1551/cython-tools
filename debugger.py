@@ -813,7 +813,7 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
     i=start_i
     t0 = time.time()
     while(i<l):
-        print(i)
+        #print(i)
         t1 = time.time()
         if t1 - t0 > timeout: raise TimeoutError
         line=code_lines[i]
@@ -1256,7 +1256,7 @@ if __name__ == '__main__':
         print(model.get_cimport_types(pxd_paths))
     #print(pxd_paths)
     pxds = enter_pxds(pxd_paths)
-    pxds = get_pxds_next_pxds(pxds)
+    #pxds = get_pxds_next_pxds(pxds)
     print(pxds)
 
 
