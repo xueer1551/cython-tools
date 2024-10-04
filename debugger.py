@@ -20,7 +20,7 @@ def get_cython_include_path() ->str:
 def open_utf8(path):
     return open(path,'r',encoding='utf8')
 
-func_args_and_suffix=r'\((?P<args>[^()]*)\)(?P<suffix>.*)'
+func_args_and_suffix=r'\((?P<args>[^()]*)\)(?P<suffix>[^:]*:)'
 cdef_block=re.compile(r'\s*cdef(\s+(?P<public>public|private|readonly))?\s*:', re.DOTALL)
 cdef_line=re.compile(r'\s*cdef\s+(?P<content>.+)', re.DOTALL)
 cdef_attr_line=re.compile(r'\s*cdef\s+(?P<public>public|private|readonly)?\s*(?P<content>[^()]+)')
@@ -191,6 +191,11 @@ class Struct(M):
     def line_func(self, line:str, model:Model):
         decode_cdef_line(line, self.var_mapping_type)
         return False
+    def get_enter(self):
+        if self.var_mapping_type: #(明确了成员)
+            f''''''
+
+
 
 class Union(M):
     __slots__ = ('name', 'type_mapping_type')
@@ -830,10 +835,10 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
                 log[i] = 100
                 continue
             #
-            r = extern_struct_union_enum_fused.match(code_line)
+            r = extern_struct_union_enum_fused.fullmatch(code_line)
             if r:
                 # name, type= r.groups()
-                get_struct_union_enum_fused_block(r, model.defind_types)
+                t=get_struct_union_enum_fused_block(r, model.defind_types)
                 i += 1
                 log[i] = 100
                 continue
@@ -1246,6 +1251,7 @@ def get_pxds_next_pxds(pxds: dict):
         else:
             return pxds
 
+def get_cython_define_type_python_enter():pass
 
 if __name__ == '__main__':
     folder='D:/xrdb'
@@ -1256,7 +1262,7 @@ if __name__ == '__main__':
         print(model.get_cimport_types(pxd_paths))
     #print(pxd_paths)
     pxds = enter_pxds(pxd_paths)
-    #pxds = get_pxds_next_pxds(pxds)
+    # pxds = get_pxds_next_pxds(pxds)
     print(pxds)
 
 
