@@ -10,8 +10,6 @@ import warnings, copy
 # 忽略所有的 SyntaxWarning 警告
 warnings.filterwarnings('ignore', category=SyntaxWarning)
 
-内置类型=r'\s*(int|short|long|long long|double|float|char|list|tuple|dict|str|bytes|object|bytearray|Py_UCS4|struct|union|enum|class|cppclass|fused)'
-
 def get_cython_include_path() ->str:
     p = sys.executable
     install_path = os.path.dirname(p)
@@ -145,7 +143,7 @@ class FuncSignature(M):
 
 
 class CimportModel(M):
-    __slots__ = ('path','from_cython_model')
+    __slots__ = ('path', 'from_cython_model', )
     def __str__(self):
         return str((self.path, self.from_cython_model))
     def __init__(self, path:tuple[str], from_cython_model:bool):
@@ -166,7 +164,7 @@ class Ctype:
 
 
 class CClass(M):
-    __slots__ = ('name', 'type', 'public_attrs','private_attrs','readonly_attrs', 'funcs' )
+    __slots__ = ('name', 'type', 'public_attrs', 'private_attrs', 'readonly_attrs', 'funcs' )
     def __init__(self, name:str, type:str,):
         #type -> class or cppclass
         self.name, self.type = name, type
@@ -184,7 +182,7 @@ class CClass(M):
 
 
 class Struct(M):
-    __slots__ = ('name', 'var_mapping_type')
+    __slots__ = ('name', 'var_mapping_type', )
     def __init__(self, name: str):
         self.name = name
         self.var_mapping_type={}
@@ -193,7 +191,8 @@ class Struct(M):
         return False
     def get_enter(self):
         if self.var_mapping_type: #(明确了成员)
-            f''''''
+            pass
+
 
 
 
@@ -270,16 +269,16 @@ class Model(M):
         return ctype_names.union(cclass_names)
     def get_appeared_base_type(self):
         if not self.appeared_base_type:
-            appeared_base_type = set()
+            appeared_base_type = {}
             self.appeared_base_type = get_all_func_c_decalre_var_types(self.funcs.values(), appeared_base_type)
             self.appeared_base_type=appeared_base_type
         return self.appeared_base_type
     def get_all_appeared_base_type(self, ):
         if not self.all_appeared_base_type:
-            all_base_type_names: set = set()
+            all_base_type_names: dict= {}
             get_all_func_c_decalre_var_types(self.funcs.values(), all_base_type_names)
             self.all_appeared_base_type=all_base_type_names
-        return self.all_appeared_base_type
+        return self.all_appeared_base_type.keys()
     def get_all_defind_base_type(self, ):
         if not self.all_defind_base_type:
             all_defind_base_type = self.get_defind_type_names()
@@ -289,6 +288,14 @@ class Model(M):
                 all_defind_base_type= all_defind_base_type.union(model.get_defind_type_names())
             self.all_defind_base_type=all_defind_base_type
         return self.all_defind_base_type
+    def get_defind_struct_union_enum_fused(self):
+        for t in self.defind_types.values():
+            if isinstance(t, Struct):
+            elif isinstance(t, Union):
+            elif isinstance(t, Enum):
+            elif isinstance(t, Fused ):
+            else:
+                pass
     def get_all_cimport_biemings(self):
         if not self.all_cimport_biemings:
             all_cimport_biemings=copy.deepcopy(self.cimport_bieming)
@@ -354,11 +361,11 @@ class Model(M):
 
 
 
-
-
-builtin_ctypes=['void','bint', 'char', 'signed char', 'unsigned char', 'short', 'unsigned short', 'int', 'unsigned int', 'long', 'unsigned long', 'long long', 'unsigned long long', 'float', 'double', 'long double', 'float complex', 'double complex', 'long double complex', 'size_t', 'Py_ssize_t', 'Py_hash_t', 'Py_UCS4','Py_Unicode']
+builtin_ctypes=['void','bint', 'char', 'signed char', 'unsigned char', 'short', 'unsigned short', 'signed short','int', 'unsigned int','signed int',
+                'long', 'unsigned long', 'signed long', 'long long', 'unsigned long long', 'signed long long','float', 'double', 'long double',
+                'float complex', 'double complex', 'long double complex', 'size_t', 'Py_ssize_t', 'Py_hash_t', 'Py_UCS4','Py_Unicode']
 builtin_cpy_types=['list','set','tuple','dict','str','unicode','bytes','bytearray','object']
-kongbais=re.compile('\s+')
+kongbais=re.compile(r'\s+')
 builtin_types= set()
 for cts in (builtin_ctypes,builtin_cpy_types):
     for ct in cts:
@@ -418,15 +425,24 @@ def get_cimport(text, cache_pxds:dict):
             raise FileNotFoundError
 
 
-def get_all_func_c_decalre_var_types(funcs, all_base_type_names: set):
+def get_all_func_c_decalre_var_types(funcs, all_base_type_names: dict):
     func: Func
     for func in funcs:
         get_all_c_declare_var_types(func.c_declare_vars.values(), all_base_type_names)
-def get_all_c_declare_var_types(defind_types, all_base_type_names:set):
+
+def get_all_c_declare_var_types(defind_types, all_base_type_names:dict):
     t: Ctype
     for t in defind_types: # t: Ctype
         if isinstance(t, Ctype):
-            all_base_type_names.add(t.base_type_name)
+            tbn, tpl =t.base_type_name, len(t.ptr_levels)
+            if tbn in all_base_type_names.keys():
+                s=all_base_type_names[t.base_type_name]
+                s.add(tpl)
+            else:
+                s=set()
+                s.add(tpl)
+        else:
+            assert t is object
 
 
 
@@ -812,8 +828,8 @@ def check_code_line_have_content(code_line:str):
     else:
         return True
 
-extern_const_var_defind=re.compile('[_\w.\s]')
-ctypedef_class=re.compile('\s*ctypedef\s+(cppclass|class)\s+(?P<name>[_\w.]+)\s+(\[.+?\])?(:)?', re.DOTALL)
+extern_const_var_defind=re.compile(r'[_\w.\s]')
+ctypedef_class=re.compile(r'\s*ctypedef\s+(cppclass|class)\s+(?P<name>[_\w.]+)\s+(\[.+?\])?(:)?', re.DOTALL)
 def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, lines:list, model:Model, log:list ):
     i=start_i
     t0 = time.time()
