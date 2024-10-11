@@ -51,8 +51,8 @@ no_used=re.compile(r'(?:\s*[#@\'"\n])', re.DOTALL)
 all_kongbai=re.compile(r'\s+')
 extern_keyword=re.compile('(ctypedef|cdef)')
 jinghaozhushi=re.compile(r'\s*#')
-left_value_express=re.compile(r'\s*([^=+\-/:]+)\s*[+\-*/:=]?=\s*(.+)', re.DOTALL)
-left_value_fuzhi_express=re.compile(r'\s*([^=+\-/:]+)\s*[:=]\s*(.+)', re.DOTALL)
+left_value_express=re.compile(r'\s*([^=+\-/:]+)\s*[<>+\-*/:=]?=\s*(.+)', re.DOTALL)
+left_value_fuzhi_express=re.compile(r'\s*([^=+\-/:<>]+)\s*[:=]\s*(.+)', re.DOTALL)
 declare_var=re.compile('([^=]+)(=.+)?',re.DOTALL)
 memoryview_=re.compile(r'\[[^:]*:[^\]]*\]', re.DOTALL)
 shuzu=re.compile(r'\[\s*([0-9]*)\s*\]',re.DOTALL)
@@ -182,12 +182,14 @@ class CClass(M):
 
 
 class Struct(M):
-    __slots__ = ('name', 'var_mapping_type', )
+    __slots__ = ('name', 'var_mapping_type', 'lines' )
     def __init__(self, name: str):
         self.name = name
         self.var_mapping_type={}
+        self.lines=[]
     def line_func(self, line:str, model:Model):
         decode_cdef_line(line, self.var_mapping_type)
+        self.lines.append(line)
         return False
     def get_enter(self):
         if self.var_mapping_type: #(明确了成员)
@@ -197,12 +199,14 @@ class Struct(M):
 
 
 class Union(M):
-    __slots__ = ('name', 'type_mapping_type')
+    __slots__ = ('name', 'type_mapping_type', 'lines')
     def __init__(self, name: str):
         self.name = name
         self.type_mapping_type={}
+        self.lines=[]
     def line_func(self, line:str, model:Model):
         decode_cdef_line(line, self.type_mapping_type)
+        self.lines.append(line)
         return False
 
 class Enum(M):
@@ -210,6 +214,7 @@ class Enum(M):
     def __init__(self, name: str):
         self.name = name
         self.vars=[]
+        self.lines = []
     def line_func(self, line:str, model:Model):
         words=words_.findall(line)
         assert len(words)==1
@@ -217,14 +222,14 @@ class Enum(M):
         return False
 
 class Fused(M):
-    __slots__ = ('name', 'defind_types')
+    __slots__ = ('name', 'define_types')
     def __init__(self,name: str):
         self.name=name
-        self.defind_types=[]
+        self.define_types=[]
     def line_func(self, line: str, model:Model):
         words = words_.findall(line)
         assert len(words) == 1
-        self.defind_types.append(words[0])
+        self.define_types.append(words[0])
         return False
     def enter(self, code_lines:list, start_i:int, l:int, lines:list, model:Model, line_func ):
         for i in range(start_i, l):
@@ -234,19 +239,19 @@ class Fused(M):
                 lines[i] = (line, line_func(line, model), model)
 
 class Model(M):
-    __slots__ = ('name', 'path', 'suffix', 'classes', 'funcs', 'vars', 'c_declare_vars','defind_types', 'cimport_bieming',
-                 'from_cimport', 'includes', 'includes_models','all_include_models', 'appeared_base_type', 'all_cimport_biemings',
-                 'all_appeared_base_type','all_defind_base_type', 'all_cimport_types','log','lines', 'all_from_cimports')
+    __slots__ = ('name', 'path', 'suffix', 'classes', 'funcs', 'all_funcs','vars', 'c_declare_vars','define_types', 'cimport_bieming',
+                 'from_cimport', 'includes', 'includes_models','all_include_models', 'appeared_base_type', 'all_cimport_biemings', 'all_funcs',
+                 'all_appeared_base_type','all_define_base_type', 'all_cimport_types','log','lines', 'all_from_cimports', 'all_classes')
     def __init__(self, name:str, path:str, suffix:str ):
         self.name, self.path, self.suffix = name, path, suffix
         self.funcs, self.vars, self.from_cimport, self.includes = {},[],{},[]
         self.classes={}
         self.cimport_bieming={}
-        self.defind_types={}
+        self.define_types={}
         self.c_declare_vars={}
         self.includes_models: set=set()
         self.all_appeared_base_type: set=None
-        self.all_defind_base_type: set=None
+        self.all_define_base_type: set=None
         self.appeared_base_type: set=None
         self.all_include_models: set=None
         self.all_cimport_types: dict=None
@@ -263,10 +268,26 @@ class Model(M):
                 all_include_models=all_include_models.union(m_a_i_m)
             self.all_include_models=all_include_models
         return self.all_include_models
-    def get_defind_type_names(self):
-        ctype_names = set(self.defind_types.keys())
-        cclass_names = set([(x,) for x in self.classes.keys()])
-        return ctype_names.union(cclass_names)
+    def get_all_classes(self):
+        if not self.all_classes:
+            all_classes=self.classes
+            for model in self.includes_models:
+                all_classes=all_classes.update(model.get_all_classes())
+            self.all_classes=all_classes
+        return self.all_classes
+    def get_all_funcs(self):
+        if not self.all_funcs:
+            all_funcs=self.funcs
+            for model in self.includes_models:
+                all_funcs.update(model.get_all_funcs())
+            self.all_funcs=all_funcs
+        return self.all_funcs
+    def get_define_types(self):
+        #ctype_names = set(self.define_types.keys())
+        #cclass_names = set([(x,) for x in self.classes.keys()])
+        d=copy.deepcopy(self.define_types)
+        d.update([((k,), v) for k,v in self.classes.items()])
+        return d
     def get_appeared_base_type(self):
         if not self.appeared_base_type:
             appeared_base_type = {}
@@ -276,26 +297,33 @@ class Model(M):
     def get_all_appeared_base_type(self, ):
         if not self.all_appeared_base_type:
             all_base_type_names: dict= {}
-            get_all_func_c_decalre_var_types(self.funcs.values(), all_base_type_names)
+            for model in self.includes_models:
+                all_base_type_names.update(model.get_appeared_base_type())
             self.all_appeared_base_type=all_base_type_names
-        return self.all_appeared_base_type.keys()
-    def get_all_defind_base_type(self, ):
-        if not self.all_defind_base_type:
-            all_defind_base_type = self.get_defind_type_names()
+        return self.all_appeared_base_type
+    def get_all_define_base_type(self, ):
+        if not self.all_define_base_type:
+            all_define_base_type = self.get_define_types()
             all_include_models = self.get_all_include_models()
             model: Model
             for model in all_include_models:
-                all_defind_base_type= all_defind_base_type.union(model.get_defind_type_names())
-            self.all_defind_base_type=all_defind_base_type
-        return self.all_defind_base_type
-    def get_defind_struct_union_enum_fused(self):
-        for t in self.defind_types.values():
+                all_define_base_type.update(model.get_define_types())
+            self.all_define_base_type=all_define_base_type
+        return self.all_define_base_type
+    def get_define_struct_union_enum_fused(self):
+        structs, unions, enums, fuseds=[],[],[],[]
+        for t in self.define_types.values():
             if isinstance(t, Struct):
+                structs.append(t)
             elif isinstance(t, Union):
+                unions.append(t)
             elif isinstance(t, Enum):
+                enums.append(t)
             elif isinstance(t, Fused ):
+                fuseds.append(t)
             else:
                 pass
+        return structs, unions, enums, fuseds
     def get_all_cimport_biemings(self):
         if not self.all_cimport_biemings:
             all_cimport_biemings=copy.deepcopy(self.cimport_bieming)
@@ -310,18 +338,21 @@ class Model(M):
                 all_from_cimports.update(model.from_cimport)
             self.all_from_cimports=all_from_cimports
         return self.all_from_cimports
-    def get_cimport_types(self, cache_pxd: dict):
+    def get_all_cimport_types(self, cache_pxd: dict):
         if not self.all_cimport_types:
             if self.suffix=='.pyx':
-                defind_types=self.get_all_defind_base_type()
-                appeard_types=self.get_appeared_base_type()
-                s=appeard_types - builtin_types
-                s -= defind_types
+                define_types:dict =self.get_all_define_base_type()
+                appeared_types:dict =self.get_all_appeared_base_type()
+                s={}
+                for name, v in appeared_types.items():
+                    if name not in builtin_types and name not in define_types.keys():
+                        s[name]=v
                 #
                 all_cimport_biemings=self.get_all_cimport_biemings()
                 all_from_cimports = self.get_all_from_cimports()
                 all_cimport_types={}
-                for bieming in s:
+                #all_cimport_ptr_level_lens={}
+                for bieming, ctype_lens in s.items():
                     assert len(bieming) == 1
                     bm: str=tuple(bieming[0].split('.'))
                     bm0=(bm[0],)
@@ -329,7 +360,8 @@ class Model(M):
                     from_text = all_from_cimports[type_name]
                     path = '.'.join((from_text, type_name))
                     pxd_path=get_cimport(path, cache_pxd)
-                    all_cimport_types[bieming]=pxd_path
+                    cimport_name = path.split('.')[-1]
+                    all_cimport_types[bieming]=(pxd_path, cimport_name)
                 self.all_cimport_types=all_cimport_types
             elif self.suffix=='.pxd':
                 all_cimport_types = {}
@@ -340,6 +372,8 @@ class Model(M):
                     path = '.'.join((from_text, type_name))
                     pxd_path = get_cimport(path, cache_pxd)
                     all_cimport_types[bieming] = pxd_path
+                    cimport_name = path.split('.')[-1]
+                    all_cimport_types[bieming] = (pxd_path, cimport_name)
                 self.all_cimport_types=all_cimport_types
             else:
                 raise AssertionError
@@ -347,11 +381,11 @@ class Model(M):
         return self.all_cimport_types
         
     def check_define_type(self, type_name:str):
-        if type_name in self.defind_types.keys():
+        if type_name in self.define_types.keys():
             return True
         else:
             for model in self.includes_models:
-                if type_name in model.defind_types.keys():
+                if type_name in model.define_types.keys():
                     return True
             return False
 
@@ -430,9 +464,9 @@ def get_all_func_c_decalre_var_types(funcs, all_base_type_names: dict):
     for func in funcs:
         get_all_c_declare_var_types(func.c_declare_vars.values(), all_base_type_names)
 
-def get_all_c_declare_var_types(defind_types, all_base_type_names:dict):
+def get_all_c_declare_var_types(define_types, all_base_type_names:dict):
     t: Ctype
-    for t in defind_types: # t: Ctype
+    for t in define_types: # t: Ctype
         if isinstance(t, Ctype):
             tbn, tpl =t.base_type_name, len(t.ptr_levels)
             if tbn in all_base_type_names.keys():
@@ -441,6 +475,7 @@ def get_all_c_declare_var_types(defind_types, all_base_type_names:dict):
             else:
                 s=set()
                 s.add(tpl)
+                all_base_type_names[t.base_type_name]=s
         else:
             assert t is object
 
@@ -504,7 +539,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             r = ctypedef_func0.match(code_line)
             if r:
                 log[i] = 11
-                get_ctypedef_func0_signature(r, model.defind_types)
+                get_ctypedef_func0_signature(r, model.define_types)
                 pre_i, pre_enter = i, 11
                 i += 1
                 continue
@@ -512,7 +547,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             r = ctypedef_func1.match(code_line)
             if r:
                 log[i] = 12
-                get_ctypedef_func1_signature(r, model.defind_types)
+                get_ctypedef_func1_signature(r, model.define_types)
                 pre_i, pre_enter = i, 12
                 i += 1
                 continue
@@ -564,7 +599,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             r = ctypedef_bieming.match(code_line)
             if r:
                 log[i] = 10
-                get_ctypede_type_bieming(r, model.defind_types)
+                get_ctypede_type_bieming(r, model.define_types)
                 lines[i] = (model, None, line)
                 pre_i, pre_enter = i, 10
                 i += 1
@@ -770,7 +805,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
 
 
 def enter_struct_union_enum_fused_block( rr: re.Match, code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, model:Model, log:list, log_v:list )->int:
-    block=get_struct_union_enum_fused_block(rr, model.defind_types)
+    block=get_struct_union_enum_fused_block(rr, model.define_types)
     return enter_block(code_lines, sj_len, block.line_func, start_i, l, lines, block, model, log, log_v)
 
 def new_var_line_or_nogil(code_line: str, c_declare_vars: dict, vars: dict ):
@@ -828,7 +863,7 @@ def check_code_line_have_content(code_line:str):
     else:
         return True
 
-extern_const_var_defind=re.compile(r'[_\w.\s]')
+extern_const_var_define=re.compile(r'[_\w.\s]')
 ctypedef_class=re.compile(r'\s*ctypedef\s+(cppclass|class)\s+(?P<name>[_\w.]+)\s+(\[.+?\])?(:)?', re.DOTALL)
 def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, lines:list, model:Model, log:list ):
     i=start_i
@@ -854,7 +889,7 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
             r = extern_struct_union_enum_fused.fullmatch(code_line)
             if r:
                 # name, type= r.groups()
-                t=get_struct_union_enum_fused_block(r, model.defind_types)
+                t=get_struct_union_enum_fused_block(r, model.define_types)
                 i += 1
                 log[i] = 100
                 continue
@@ -862,14 +897,14 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
             r = ctypedef_func0.match(code_line)
             if r:
                 log[i] = 11
-                get_ctypedef_func0_signature(r, model.defind_types)
+                get_ctypedef_func0_signature(r, model.define_types)
                 i += 1
                 continue
             #
             r = ctypedef_func1.match(code_line)
             if r:
                 log[i] = 12
-                get_ctypedef_func1_signature(r, model.defind_types)
+                get_ctypedef_func1_signature(r, model.define_types)
                 i += 1
                 continue
             #
@@ -904,7 +939,7 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
             r = ctypedef_bieming.match(code_line)
             if r:
                 log[i] = 10
-                get_ctypede_type_bieming(r, model.defind_types)
+                get_ctypede_type_bieming(r, model.define_types)
                 lines[i] = (model, None, line)
                 i += 1
                 continue
@@ -1134,7 +1169,6 @@ def get_1_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s):
         assert xinghaocount==1
         return None, None, None
 
-
 def get_ptr_level(xinghao_count:int, fangkuohao:str, stat: int) -> list[int | None]:
     if not stat is None:
         assert fangkuohao
@@ -1205,6 +1239,7 @@ def enter_pyxs(file_paths):
     enter_models_include_pyxs(models, entered_pyxs)
     return entered_pyxs
 
+
 def try_enter_pyx(path:str, entered_pyxs:dict):
     if path not in entered_pyxs:
         f, n = get_folder_and_filename(path)
@@ -1259,7 +1294,7 @@ def get_pxds_next_pxds(pxds: dict):
     while(True):
         pxd_paths={}
         for model in pxds.values():
-            model.get_cimport_types(pxd_paths)
+            model.get_all_cimport_types(pxd_paths)
         if pxd_paths:
             next_pxd_paths = set(pxd_paths.keys()) - set(pxds.keys())
             new_pxds = enter_pxds(next_pxd_paths)
@@ -1267,7 +1302,162 @@ def get_pxds_next_pxds(pxds: dict):
         else:
             return pxds
 
-def get_cython_define_type_python_enter():pass
+def get_cimport_type_class(models ):
+    pxd_paths = {}
+    for model in models:
+        name_mapping_path = model.get_all_cimport_types(pxd_paths)
+    #
+    pxds:dict[str,Model] = enter_pxds(pxd_paths)
+    #
+    for model in models:
+        for cimport_type in model.get_all_cimport_types():pass
+
+#-----------------------------------------------------------------------------------------------------------------------
+def get_builtin_ctype_class_names():
+    d={}
+    for name in builtin_ctypes:
+        words = name.split(' ')
+        class_name = ''.join([x.title() for x in words])
+        d[name]=class_name
+
+def get_cimport_types_name(cimport_types, pxds:dict, bultin_class_names:dict):
+    for bieming, path_and_name in cimport_types:
+        pxd_path, type_name = path_and_name
+        pxd: Model = pxds[pxd_path]
+
+
+def get_show_pxd_text(model:Model):
+    text=f'''
+ctypedef show_func(void* ptr)
+cdef show_not_define_type(void* ptr):
+    raise ValueError('该类型仅声明，未定义/Not define the type, only declared')
+    
+cdef class Ptr:
+    cdef char* ptr
+    cdef readonly list ptr_levels
+    cdef readonly address
+    cdef readonly len
+    cdef readonly unsigned int itemsize
+    cdef show_func* func
+    def __init__(self):pass
+    def __getattr__(self, i: int):
+        cdef char** ptr
+        if isinstance(i, int):
+            if self.len:
+                if i< self.len:
+                    if len(self.ptr_levels)==1:
+                        return self.func(self.ptr + self.itemsize*i)
+                    else:
+                        assert len(self.ptr_levels)>1
+                        ptr=<char**>(self.ptr + self.itemsize*i)
+                        return Ptr().set(self.ptr, self.ptr_levels[:-1], self.show_func, self.itemsize)
+                else:
+                    raise IndexError
+            else:
+                raise ValueError("请先调用set_len方法设置元素个数/please call set_len method set item count")
+        else:
+            raise KeyError
+            
+    def set_len(self, l: int):
+        if isinstance(l, int):
+            self.len=l
+        else:
+            raise TypeError
+            
+    cdef set(self, void** ptr, list ptr_levels, show_func* func, unsigned int itemsize ):
+        self.ptr=<char**>ptr[0]
+        self.address=<unsigned int>ptr
+        self.len  = ptr_levels[-1]
+        self.ptr_levels=ptr_levels
+        self.itemsize=itemsize
+        self.func=func
+        return self
+        
+class Struct:
+    def __repr__(self):
+        return self.__name__+': struct'
+        
+class Union:
+    def __repr__(self):
+        return self.__name__+': union'
+        
+class Enum:
+    def __init__(self, name, value):
+        self.name=name
+        self.value=value
+    def __repr__(self):
+        return self.__name__+'.self.name'+': enum'
+'''
+
+    structs, unions, enums, fuseds = {}, {}, {}, {}, {}
+    for t in model.define_types.values():
+        if isinstance(t, Struct):
+            class_text, show_func_text = get_struct_union_class_and_show_func()
+        elif isinstance(t, Union):
+            unions.append(t)
+        elif isinstance(t, Enum):
+            enums.append(t)
+        elif isinstance(t, Fused):
+            fuseds.append(t)
+
+def get_struct_union_class_and_show_func(t:Struct|Union, all_used_name:set, struct_or_union:str):
+    name = t.name
+    class_name = get_name(t.name.title(), model.get_all_appeared_base_type())
+    class_text = f'''
+class {class_name}({struct_or_union}):
+    def __init__(self, d):
+        self.__dict__ = d
+    '''
+    func_name=f'show_{class_name}'
+    func_names=model.get_all_funcs()
+    func_text = get_struct_union_show_func(name, func_name, t.var_mapping_type, cls_names)
+
+def get_class(t:Struct|Union, jicheng: str):
+    cls_name = get_name(t.name.title(), model.get_all_appeared_base_type())
+    return f'''
+class {cls_name.upper()}({jicheng}):
+    def __init__(self, d):
+        self.__dict__ = d
+    '''
+
+def get_struct_union_show_func( name:str, func_name:str, attrs):
+    struct =f'''
+cdef {func_name}(void* vp):
+    cdef {name}* v=<{name}*>vp
+    '''
+    atts=[]
+    for att_name, att_ctype in attrs:
+        if isinstance(att_ctype, Ctype) and not att_ctype.memoryview:
+            atts.append(f'"{att_name}":show_{att_name}(&({name}.{att_name}))')
+        else:
+            atts.append(f'"{att_name}":{att_name}')
+    struct += '\n    d= {' + ', '.joi0n(atts) + '}'
+    struct += f'\n    return {name.upper()}(d)'
+    return struct
+
+def get_enum_show_func(type_name:str, func_type_name:str, values):
+    enum=f'''
+cdef {func_type_name}(void* vp):
+    cdef {type_name} v=<{type_name}*>vp '''
+    for value in values:
+        enum+=f'\n    if v=={type_name}.{value}: return Enum("{type_name}.{value}", <unsigned int>v)'
+    enum +='   raise AssertionError'
+    return enum
+
+def get_fused_show_func(name:str, types, func_name:str, many_word_mapping_one_word: dict):
+    fused=f'''
+cdef {func_name}({name} v):
+        '''
+    for t in types:
+        type_name, show_type_func_name = many_word_mapping_one_word[t]
+        fused +=f'\n    if {name}=={type_name}: return {get_show_func_from_tuple_name(name)}(&v)'
+    fused += '\n   raise AssertionError'
+
+def get_name(name:str, names:set):
+    while(name in names):
+        name +='0'
+    return name
+
 
 if __name__ == '__main__':
     folder='D:/xrdb'
@@ -1275,10 +1465,9 @@ if __name__ == '__main__':
     models=list(entered_pyxs.values())
     pxd_paths={}
     for model in models:
-        print(model.get_cimport_types(pxd_paths))
-    #print(pxd_paths)
+        print(model.get_all_cimport_types(pxd_paths))
     pxds = enter_pxds(pxd_paths)
-    # pxds = get_pxds_next_pxds(pxds)
+
     print(pxds)
 
 

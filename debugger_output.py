@@ -1,11 +1,18 @@
 
+def get_cimport_types_class(cimport_types, pxds):
+    d={}
+    for pxd_path, type_name in cimport_types:
+        pxd = pxds[pxd_path]
+
+
 def get_struct_union_class( cls_name:str, struct_or_union:str):
     return f'''
 class {cls_name}({struct_or_union}):
     def __init__(self, d):
         self.__dict__ = d
     '''
-def get_struct_union_name( name:str, func_name:str, cls_name:str, attrs, type_mapping_show_func:dict):
+
+def get_struct_union_show_func( name:str, func_name:str, cls_name:str, attrs, type_mapping_show_func:dict):
     struct =f'''
 cdef {func_name}({name} v):
     '''
@@ -16,6 +23,7 @@ cdef {func_name}({name} v):
     struct += '\n    d= {' + ', '.joi0n(atts) + '}'
     struct += f'\n    return {cls_name}(d)'
     return struct
+
 def get_enum_show_func(name:str, func_name:str, values):
     enum=f'''
 cdef {func_name}({name} v):
