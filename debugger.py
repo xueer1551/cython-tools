@@ -25,7 +25,7 @@ cdef_attr_line=re.compile(r'\s*cdef\s+(?P<public>public|private|readonly)?\s*(?P
 cdef_struct_union_enum_fused=re.compile(r'\s*(?:cdef|ctypedef)\s+(?:.+?)?(?P<type>struct|union|enum|fused)\s+(?P<name>[^:]+)\s*:', re.DOTALL)
 cdef_class=re.compile(r'\s*(?P<cdef>cdef|ctypedef)?\s*(?P<cppclass>cpplass|class)\s+(?P<name>[_\w]+)(?P<jicheng>\s*\([^()]+\)\s*)?:', re.DOTALL)
 extern_class=re.compile(r'\s*(?:cdef|ctypedef)\s+(?:extern\s+)?(?P<cppclass>cpplass|class)\s+(?P<name>[_\w.]+\s*)(?P<c_struct>\[[_\w.\s]+\]\s*)?(?P<maohao>:)?', re.DOTALL)
-extern_struct_union_enum_fused=re.compile(r'\s*(?:ctypedef)\s+(?:.+?)?(?P<type>struct|union|enum|fused)\s+(?P<name>[^:]+)', re.DOTALL)
+extern_struct_union_enum_fused=re.compile(r'\s*(?:ctypedef)\s+(?:.+?)?(?P<type>struct|union|enum|fused)\s+(?P<name>[^:\s]+)', re.DOTALL)
 cdef_extern_from=re.compile(r'\s*cdef\s+(?P<public>public\s+)?extern\s+from\s+(?P<name>[^:]+):', re.DOTALL)
 ctypedef_bieming=re.compile(r'\s*ctypedef\s+(?P<content>[^()\'"]+)(?:\s*[\'"][^\'"]*[\'"])?',re.DOTALL)
 from_import=re.compile(r'\s*from\s+(.+?)\s+(c?import)(?P<content>.+)', re.DOTALL)
@@ -33,13 +33,13 @@ with_=re.compile(r'\s*with\s+(?P<content>.+):', re.DOTALL)
 with_nogil=re.compile(r'\s*with\s+nogil\s*:')
 import_=re.compile(r'\s*(c?import)\s+(?P<content>.+)', re.DOTALL)
 func_name_and_arg_and_suffix=rf'(?P<type_and_name>[^()]+){func_args_and_suffix}'
-modifiers_=r'(?P<modifier>(?:public\s+)?(?:api\s+)?(?:inline\s+)?(?:volatile\s+|const\s+){0,2})'
+modifiers_=r'(?:(?:public\s+)?(?:api\s+)?(?:inline\s+)?(?P<volatile_const>volatile\s+const\s+|const\s+volatile\s+)?)'
 func=modifiers_+func_name_and_arg_and_suffix
-extern_func=re.compile(r'\s*'+func, re.DOTALL)
+extern_func=re.compile(r'\s*'+modifiers_+r'(?P<type_and_name>[^()]+)\s*\((?P<args>[^()]*)\)(?P<suffix>.*)', re.DOTALL)
 cdef_func=re.compile(fr'\s*(?:async\s+)?(?:c?p?def)\s+{func}', re.DOTALL)
 async_func=re.compile(rf'\s*(?:async\s+)?(?:def)\s+{func_name_and_arg_and_suffix}', re.DOTALL)
-ctypedef_func0=re.compile(rf'\s*ctypedef\s+{func}', re.DOTALL)
-ctypedef_func1=re.compile(rf'\s*ctypedef\s+{modifiers_}(?P<type>(?:[_\w]+\s+)+)(?:\(\s*\**(?P<name>[_\w]+)\s*\)){func_args_and_suffix}', re.DOTALL)
+ctypedef_func0=re.compile(rf'\s*ctypedef\s+'+modifiers_+r'(?P<type_and_name>[^()]+)\s*\((?P<args>[^()]*)\)(?P<suffix>.*)', re.DOTALL)
+ctypedef_func1=re.compile(rf'\s*ctypedef\s+{modifiers_}(?P<type>(?:[_\w]+\s+)+)(?:\(\s*\**(?P<name>[_\w]+)\s*\))'+r'\((?P<args>[^()]*)\)(?P<suffix>.*)', re.DOTALL)
 include=re.compile(r'\s*include\s*[\'"]{1,3}(?P<name>[^\'"]+)[\'"]{1,3}', re.DOTALL)
 global_=re.compile(r'\s*global\s+(?P<name>[\w_]+)', re.DOTALL)
 for_=re.compile(r'\s*for\s+(?P<content>.+)?\s+(in|from)\s+', re.DOTALL)
@@ -97,7 +97,7 @@ class M:
 
 def create_func(rr:re.Match, parent_vars_symbol_table: dict) :
     modifier_text, type_and_name_text, args_text, suffix_text = rr.groups()
-    modifier = tuple(words_.findall(modifier_text))
+    modifier = tuple(sorted(words_.findall(modifier_text))) if modifier_text else tuple()
     return_type, func_name = get_func_return_type_and_name(type_and_name_text, modifier)
     func = Func(func_name, return_type, args_text, suffix_text)
     parent_vars_symbol_table[func_name] = func
@@ -155,13 +155,14 @@ class Ctype:
         self.base_type_name, self.modifiers, self.ptr_levels = base_type_name, modifier, ptr_level
         self.memoryview = memoriview
     def __hash__(self):
-        return hash(self.name)
+        return hash(self.base_type_name)
     def __str__(self):
         return str(self.base_type_name)
     def __add__(self, ptr_level: list) :
         assert not self.memoryview
         return Ctype( self.base_type_name, self.modifiers, ptr_level+self.ptr_levels, False)
-
+    def __eq__(self, other):
+        return self.base_type_name == other.base_type_name and self.modifiers==other.modifiers and self.ptr_levels == other.ptr_levels and self.memoryview==other.memoryview
 
 class CClass(M):
     __slots__ = ('name', 'type', 'public_attrs', 'private_attrs', 'readonly_attrs', 'funcs' )
@@ -194,6 +195,14 @@ class Struct(M):
     def get_enter(self):
         if self.var_mapping_type: #(明确了成员)
             pass
+    def get_show_class_name_and_func_name(self, symbols:set,  ):
+        name = self.name.title()
+        cls_name = get_name(name, symbols)
+        func_name = get_name(f'show_{self.name}', symbols)
+        return cls_name, func_name
+
+
+
 
 
 
@@ -225,11 +234,11 @@ class Fused(M):
     __slots__ = ('name', 'define_types')
     def __init__(self,name: str):
         self.name=name
-        self.define_types=[]
+        self.define_struct_union_enum_fuseds=[]
     def line_func(self, line: str, model:Model):
         words = words_.findall(line)
         assert len(words) == 1
-        self.define_types.append(words[0])
+        self.define_struct_union_enum_fuseds.append(words[0])
         return False
     def enter(self, code_lines:list, start_i:int, l:int, lines:list, model:Model, line_func ):
         for i in range(start_i, l):
@@ -237,22 +246,23 @@ class Fused(M):
             code_line, suojin_len, start_lineno, end_lineno = line
             if suojin_len > 0:  # 仍在块中
                 lines[i] = (line, line_func(line, model), model)
+
+class FinalCtype(M):
+    def __init__(self, t: Struct|Union|Enum|Fused|FuncSignature|object|str, modifiers, ptr_levels):
+        self.t, self.modifiers, self.ptr_levels = t, modifiers, ptr_levels
+
 PyObject=('PyObject',)
 class Model(M):
-    __slots__ = ('name', 'path', 'suffix', 'classes', 'funcs', 'all_funcs','vars', 'c_declare_vars','define_types', 'cimport_biemings',
-                 'from_cimport', 'includes', 'includes_models','all_include_models', 'appeared_base_type', 'all_cimport_biemings', 'all_funcs',
-                 'all_appeared_base_type','all_define_base_type', 'all_cimport_types','log','lines', 'all_from_cimports', 'all_classes',
-                 'ctypedef_biemings', 'all_ctypedef_biemings', 'ctypedef_func_ptr', 'all_ctypedef_func_ptr')
     def __init__(self, name:str, path:str, suffix:str ):
         self.name, self.path, self.suffix = name, path, suffix
         self.funcs, self.vars, self.from_cimport, self.includes = {},[],{},[]
         self.classes={}
         self.cimport_biemings={}
-        self.define_types={}
+        self.define_struct_union_enum_fuseds={}
         self.c_declare_vars={}
         self.includes_models: set=set()
         self.all_appeared_base_type: set=None
-        self.all_define_base_type: set=None
+        self.all_define_ctype: set=None
         self.appeared_base_type: dict={}
         self.all_include_models: set=None
         self.all_cimport_types: dict=None
@@ -262,8 +272,26 @@ class Model(M):
         self.all_ctypedef_biemings: dict=None
         self.ctypedef_func_ptr: dict={}
         self.all_ctypedef_func_ptr: dict=None
+        self.all_ctypedef_bieming_final_type: dict=None
+        self.all_appeared_type_final_types: dict = None
     def cdef_line_func(self, line: str,  model):
         return decode_cdef_line(line, self.c_declare_vars)
+    def get_define_ctype_show_class_and_show_func_text(self):
+        symbols=self.get_all_symbol()
+        for t in self.all_define_ctype:pass
+
+
+    def get_all_symbol(self) ->set[str]:
+        if not self.all_symbol:
+            s= set().union(builtin_ctypes).union([x[0] for x in builtin_cpy_types]).union( [x[0] for x in self.all_define_ctype])
+            s = s.union(self.all_funcs).union( [x[0] for x in self.all_classes]).union( [x[0] for x in self.all_ctypedef_biemings])
+            s = s.union([x[0] for x in self.all_ctypedef_func_ptr]).union(self.all_from_cimports).union(self.all_vars)
+            s = s.union(self.all_c_declare_vars)
+            for x in s:
+                assert isinstance(x, str)
+            self.all_symbol = s
+        return self.all_symbol
+
     def get_all_include_models(self):
         if not self.all_include_models:
             model: Model
@@ -273,66 +301,132 @@ class Model(M):
                 all_include_models=all_include_models.union(m_a_i_m)
             self.all_include_models=all_include_models
         return self.all_include_models
-    def get_a_ctype_final_type(self, t: Ctype|object, pxd_models:dict):
-        if t is object:
+    def pxd_get_cdef_classes_name(self):
+        d={}
+        for name, cls in self.classes.items():
+            names=name.split('.')
+            d[(names[-1],)]=cls
+        self.classes =d
+    def pxd_get_define_final_type_from_symbol(self, symbol:str):
+        if symbol in self.define_struct_union_enum_fuseds:
+            return self.define_struct_union_enum_fuseds[symbol]
+        elif symbol in self.classes:
             return object
-        if isinstance(t, Ctype):
-            if not t.memoryview:
-                name, tt =t.base_type_name, t
-                while(name in self.ctypedef_biemings):
-                    tt : Ctype = self.ctypedef_biemings[name]
-                    name=tt.base_type_name
-                if name in builtin_ctypes:
-                    return tt
-                if name in self.all_define_base_type:
-                    return tt + t.ptr_levels
-                if name==PyObject and len(tt.ptr_levels)==1:
-                    return object
-                if name in self.all_cimport_types:
-                    pxd_path = self.all_cimport_types[name]
-                    pxd: Model = pxd_models[pxd_path]
-                    if pxd:pass
+        elif symbol in self.ctypedef_func_ptr:
+            return FuncSignature
+        else:
+            raise KeyError
+    def get_all_appeared_type_final_type(self):
+        t: Ctype=None
+        all_appeared_type_final_type={}
+        for ts in self.all_appeared_base_type.values():
+            for t in ts:
+                final_t = self.get_define_final_type_from_ctype(t)
+                all_appeared_type_final_type[t]=final_t
+        self.all_appeared_type_final_type=all_appeared_type_final_type
 
+    def get_define_final_type_from_ctype(self, t: Ctype|object|FuncSignature, ):
+        if t is object:
+            return FinalCtype(object, None,None)
+        else:
+            assert isinstance(t, Ctype)
+            #
+            if t.memoryview:
+                return FinalCtype(object, None,None)
+            #
+            name, tt = t.base_type_name, t
+            while (name in self.all_ctypedef_biemings):
+                tt: Ctype = self.all_ctypedef_biemings[name]
+                tt += t.ptr_levels
+                name = tt.base_type_name
+            t=tt
+            #
+            if name in self.all_classes:
+                return FinalCtype(object, None, None)
+            elif name in builtin_cpy_types:
+                return FinalCtype(object, None, None)
+            elif name in builtin_types:
+                return FinalCtype(name, t.modifiers, t.ptr_levels)
+            #
+            elif name in self.all_define_ctype:
+                ctype = self.all_define_ctype[name]
+                return FinalCtype(ctype, t.modifiers, tt.ptr_levels)
+            #
+            elif name in self.all_cimport_final_types:
+                tt=self.all_cimport_final_types[name]
+                if tt is object:
+                    return FinalCtype(object, None,None)
+                if isinstance(tt, FuncSignature):
+                    return FinalCtype(FuncSignature, tt.modifiers, tt.ptr_levels)
+                return FinalCtype(tt.base_type_name, tt.modifiers, tt.ptr_levels)
+            #
+            elif name in self.ctypedef_func_ptr:
+                return FinalCtype(FuncSignature, tt.modifiers, tt.ptr_levels)
             else:
-                return object
-        if isinstance(t, CClass): #cdef class
-            return object
-        if isinstance(t, FuncSignature): #函数指针
-            return
+                raise AssertionError
+
+    def get_all_ctypedef_bieming_final_type(self):
+        all_ctypedef_bieming_final_type={}
+        for name, t in self.all_ctypedef_biemings.items():
+            while(t.base_type_name in self.ctypedef_biemings):
+                name = t.base_type_name
+                tt = self.all_ctypedef_biemings[name]
+                t = tt+t.ptr_levels
+            all_ctypedef_bieming_final_type[name]=t
+        self.all_ctypedef_bieming_final_type=all_ctypedef_bieming_final_type
     def get_all(self):
         all_classes = copy.deepcopy(self.classes)
         all_funcs = copy.deepcopy(self.funcs)
         all_from_cimports = copy.deepcopy(self.from_cimport)
         all_cimport_biemings = copy.deepcopy(self.cimport_biemings)
-        all_define_base_type = copy.deepcopy(self.define_types)
-        all_ctypedef_biemings = copy.deepcopy(self.cimport_biemings)
+        all_define_ctype = copy.deepcopy(self.define_struct_union_enum_fuseds)
+        all_ctypedef_biemings = copy.deepcopy(self.ctypedef_biemings)
         all_ctypedef_func_ptr = copy.deepcopy(self.ctypedef_func_ptr)
         all_appeared_base_type_names = self.get_appeared_base_type()
+        all_vars=self.vars.copy()
         all_include_models = self.get_all_include_models()
+        all_c_declare_vars = copy.deepcopy(self.c_declare_vars)
         for model in self.includes_models:
             model.get_all()
             all_classes.update(model.all_classes)
             all_funcs.update(model.all_funcs)
-            all_appeared_base_type_names.update(model.all_appeared_base_type)
-            all_define_base_type.update(model.all_define_base_type)
+            merge_dict(all_appeared_base_type_names, model.all_appeared_base_type, merge_set)
+            all_define_ctype.update(model.all_define_ctype)
             all_ctypedef_biemings.update(model.all_ctypedef_biemings)
             all_ctypedef_func_ptr.update(model.all_ctypedef_func_ptr)
             all_cimport_biemings.update(model.all_cimport_biemings)
             all_from_cimports.update(model.all_from_cimports)
+            all_vars += model.all_vars
+            all_cimport_biemings.update(model.all_cimport_biemings)
         self.all_from_cimports = all_from_cimports
         self.all_cimport_biemings = all_cimport_biemings
-        self.all_define_base_type = all_define_base_type
+        self.all_define_ctype = all_define_ctype
         self.all_appeared_base_type = all_appeared_base_type_names
         self.all_funcs = all_funcs
         self.all_classes = all_classes
-        self.all_define_base_type = all_define_base_type
+        self.all_define_ctype = all_define_ctype
         self.all_ctypedef_biemings = all_ctypedef_biemings
         self.all_ctypedef_func_ptr = all_ctypedef_func_ptr
+        self.all_vars = all_vars
+        self.all_c_declare_vars = all_c_declare_vars
+        #
+        self.get_all_ctypedef_bieming_final_type()
+        #
+        all_define_base_type = copy.deepcopy(all_define_ctype)
+        for ts in ( all_classes, all_ctypedef_func_ptr, self.all_ctypedef_bieming_final_type):
+            all_define_base_type.update(ts)
+        self.all_define_base_type = all_define_base_type
 
     def get_appeared_base_type(self):
         if not self.appeared_base_type:
-            appeared_base_type = get_all_func_c_decalre_var_types(self.funcs.values(), {})
+            appeared_base_type={}
+            for func in self.funcs.values():
+                get_all_c_declare_var_types(func.c_declare_vars.values(), appeared_base_type)
+                rt = func.return_type
+                if isinstance(rt, Ctype) and rt.base_type_name not in appeared_base_type:
+                    appeared_base_type[rt.base_type_name] = set((rt,))
             get_all_c_declare_var_types(self.c_declare_vars.values(), appeared_base_type)
+            get_all_c_declare_var_types(self.ctypedef_biemings.values(), appeared_base_type)
             self.appeared_base_type=appeared_base_type
         return self.appeared_base_type
 
@@ -343,7 +437,7 @@ class Model(M):
                 appeared_types:dict =self.all_appeared_base_type
                 s={}
                 for name, v in appeared_types.items():
-                    if name not in builtin_types and name not in define_types.keys():
+                    if name not in builtin_types and name not in self.all_define_base_type :
                         s[name]=v
                 #
                 all_cimport_biemings=self.all_cimport_biemings
@@ -356,10 +450,10 @@ class Model(M):
                     bm0=(bm[0],)
                     type_name = all_cimport_biemings[bm0]
                     from_text = all_from_cimports[type_name]
-                    path = '.'.join((from_text, type_name))
+                    path = '.'.join((from_text, bieming[0]))
                     pxd_path=get_cimport(path, cache_pxd)
                     cimport_name = path.split('.')[-1]
-                    all_cimport_types[bieming]=(pxd_path, cimport_name)
+                    all_cimport_types[bieming]=(pxd_path, type_name)
                 self.all_cimport_types=all_cimport_types
             elif self.suffix=='.pxd':
                 all_cimport_types = {}
@@ -371,21 +465,53 @@ class Model(M):
                     pxd_path = get_cimport(path, cache_pxd)
                     all_cimport_types[bieming] = pxd_path
                     cimport_name = path.split('.')[-1]
-                    all_cimport_types[bieming] = (pxd_path, cimport_name)
+                    all_cimport_types[bieming] = (pxd_path, type_name)
                 self.all_cimport_types=all_cimport_types
             else:
                 raise AssertionError
         #
         return self.all_cimport_types
+    def get_cimport_types_final_type(self, pxd_models):
+        all_cimport_final_types={}
+        for name, path_and_type in self.all_cimport_types.items():
+            pxd_path, type_name = path_and_type
+            pxd: Model = pxd_models[pxd_path]
+            final_type=pxd.pxd_get_define_final_type_from_symbol((type_name,))
+            all_cimport_final_types[name]=final_type
+        self.all_cimport_final_types=all_cimport_final_types
+
+
+
+def get_ctype_final_type_or_ctype(t: Ctype, biemings:dict, all_define_ctype:dict):
+    if t is object:
+        return FinalCtype(object, None, None)
+    if isinstance(t, CClass):  # cdef class
+        return FinalCtype(object, None, None)
+    if isinstance(t, FuncSignature):  # 函数指针
+        return FinalCtype(FuncSignature, None, None)
+    if isinstance(t, Ctype):
+        name=t.base_type_name
+        if name in builtin_cpy_types:
+            return FinalCtype(object, None, None)
+        while (name in biemings):
+            tt: Ctype = biemings[name]
+            tt += t.ptr_levels
+            name = tt.base_type_name
+            t=tt
+        if name in builtin_ctypes:
+            return FinalCtype(t.base_type_name, t.modifiers, t.ptr_levels)
+        if name in all_define_ctype:
+            return FinalCtype(t.base_type_name, t.modifiers, t.ptr_levels)
+        if name == PyObject and len(tt.ptr_levels) == 1:
+            return FinalCtype(t.base_type_name, t.modifiers, t.ptr_levels)
+        raise AssertionError
 
 
 
 
 
 
-
-
-builtin_ctypes=['void','bint', 'char', 'signed char', 'unsigned char', 'short', 'unsigned short', 'signed short','int', 'unsigned int','signed int',
+builtin_ctypes=['void', 'bint', 'char', 'signed char', 'unsigned char', 'short', 'unsigned short', 'signed short','int', 'unsigned int','signed int',
                 'long', 'unsigned long', 'signed long', 'long long', 'unsigned long long', 'signed long long','float', 'double', 'long double',
                 'float complex', 'double complex', 'long double complex', 'size_t', 'Py_ssize_t', 'Py_hash_t', 'Py_UCS4','Py_Unicode']
 builtin_cpy_types=['list','set','tuple','dict','str','unicode','bytes','bytearray','object']
@@ -394,6 +520,7 @@ builtin_types= set()
 for cts in (builtin_ctypes,builtin_cpy_types):
     for ct in cts:
         builtin_types.add(tuple(kongbais.split(ct)))
+builtin_cpy_types = set([(x,) for x in builtin_cpy_types])
 
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -425,11 +552,10 @@ def try_get_pxd(path:str):
 def get_cimport(text, cache_pxds:dict):
     levels = text.strip('.').split('.')
     assert len(levels)>1
-    path=levels[:-1]
-    name=levels[-1]
+    path='/'.join(levels[:-1])
     #
     from_cython_model = False
-    p, is_pxd = try_get_pxd('/'.join(path))
+    p, is_pxd = try_get_pxd(path)
     if is_pxd: # p是pxd的路径
         if p not in cache_pxds.keys():
             cm=CimportModel(p, from_cython_model)
@@ -448,24 +574,38 @@ def get_cimport(text, cache_pxds:dict):
         else:
             raise FileNotFoundError
 
+def merge_item(v0, v1): raise AssertionError
+def merge_dict(d0:dict, d1:dict, func):
+    if len(d0)>len(d1):
+        d_long, d_short = d0, d1
+    else:
+        d_long, d_short = d1, d0
+    d=copy.deepcopy(d_long)
+    for k,v in d_short.items():
+        try:
+            vv=d[k]
+            d[k]=func( v, vv)
+        except KeyError:
+            d[k]=v
+    return d
 
-def get_all_func_c_decalre_var_types(funcs, all_base_type_names: dict):
-    func: Func
-    for func in funcs:
-        get_all_c_declare_var_types(func.c_declare_vars.values(), all_base_type_names)
-    return all_base_type_names
+
+def merge_list(v0:list, v1:list):
+    return v0+v1
+def merge_set(v0:set, v1:set):
+    return v0|v1
 
 def get_all_c_declare_var_types(define_types, all_base_type_names:dict):
     t: Ctype
     for t in define_types: # t: Ctype
         if isinstance(t, Ctype):
-            tbn, tpl =t.base_type_name, len(t.ptr_levels)
+            tbn=t.base_type_name
             if tbn in all_base_type_names.keys():
                 s=all_base_type_names[t.base_type_name]
-                s.add(tpl)
+                s.add(t)
             else:
                 s=set()
-                s.add(tpl)
+                s.add(t)
                 all_base_type_names[t.base_type_name]=s
         else:
             assert t is object
@@ -519,7 +659,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
                 log[i]=1
                 name=name.strip()
                 cls=CClass(name, type)
-                model.classes[name]=cls
+                model.classes[(name,)]=cls
                 i=enter_class_block(code_lines, suojin_len, i+1, l, lines, cls, model, start_lineno, end_lineno, log)
                 assert pre_i < i
                 pre_i, pre_enter = i, 1
@@ -794,7 +934,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
 
 
 def enter_struct_union_enum_fused_block( rr: re.Match, code_lines: iter, sj_len: int, start_i: int, l: int, lines:list, model:Model, log:list, log_v:list )->int:
-    block=get_struct_union_enum_fused_block(rr, model.define_types)
+    block=get_struct_union_enum_fused_block(rr, model.define_struct_union_enum_fuseds)
     return enter_block(code_lines, sj_len, block.line_func, start_i, l, lines, block, model, log, log_v)
 
 def new_var_line_or_nogil(code_line: str, c_declare_vars: dict, vars: dict ):
@@ -878,7 +1018,7 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
             r = extern_struct_union_enum_fused.fullmatch(code_line)
             if r:
                 # name, type= r.groups()
-                t=get_struct_union_enum_fused_block(r, model.define_types)
+                t=get_struct_union_enum_fused_block(r, model.define_struct_union_enum_fuseds)
                 i += 1
                 log[i] = 100
                 continue
@@ -928,7 +1068,7 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
             r = ctypedef_bieming.match(code_line)
             if r:
                 log[i] = 10
-                get_ctypede_type_bieming(r, model.define_types)
+                get_ctypede_type_bieming(r, model.ctypedef_biemings)
                 lines[i] = (model, None, line)
                 i += 1
                 continue
@@ -964,7 +1104,7 @@ def get_ctypede_type_bieming(rr :re.Match, type_symbol_table: dict):
 
 def get_ctypedef_func0_signature(rr: re.Match, type_symbol_table: dict):
     modifier_text, type_and_name_text, args_text, suffix_text= rr.groups()
-    modifier = tuple(words_.findall(modifier_text))
+    modifier = tuple(sorted(words_.findall(modifier_text))) if modifier_text else tuple()
     return_type, name = get_func_return_type_and_name(type_and_name_text, modifier)
     name = (name.strip(),)
     if return_type is object: assert not modifier
@@ -986,11 +1126,11 @@ def get_ctypedef_func1_signature(rr: re.Match, type_symbol_table: dict):
     type_symbol_table[name]=t
 
 def get_cdef_func_signature(rr: re.Match, parent_vars_symbol_table: dict, self_vars_symbol_table: dict):
-    _, modifier_text, type_and_name_text, args_text, suffix_text=rr.groups()
+    modifier_text, type_and_name_text, args_text, suffix_text=rr.groups()
     get_func(modifier_text, type_and_name_text, args_text, suffix_text, parent_vars_symbol_table)
 
 def get_func(modifier_text, type_and_name_text, args_text, suffix_text, parent_vars_symbol_table: dict, self_vars_symbol_table: dict):
-    modifier = tuple(words_.findall(modifier_text))
+    modifier = tuple(sorted(words_.findall(modifier_text))) if modifier_text else tuple()
     return_type, func_name = get_func_return_type_and_name(type_and_name_text, modifier)
     #print(modifier_text, type_and_name_text, args_text, suffix_text)
     args_text_ = cut.cut_douhao_and_strip(args_text)
@@ -1072,8 +1212,12 @@ def get_cdef_line(rr: re.Match, symbol_table: dict):
 
 def get_func_return_type_and_name(text: str, modifier):
     words_xinghaocount_xinghaos_fangkuohao_stat_s = cut.split_by_fangkuohao_and_del_yuan_kuohao(text)
-    t, name, _ = get_1_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s)
-    return t, name
+    return_type, name, _ = get_1_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s)
+    if isinstance(return_type, Ctype):
+        return_type.modifiers=modifier
+    else:
+        assert not modifier
+    return return_type, name
 
 bieming_re=re.compile(r'[_\w.]+',re.DOTALL)
 def get_as_biemings(content: str) ->list[tuple[str,str]]:
@@ -1171,7 +1315,7 @@ def get_ptr_level(xinghao_count:int, fangkuohao:str, stat: int) -> list[int | No
                 ptr_level.append(None)
     else:
         ptr_level = []
-    ptr_level + [None] * xinghao_count
+    ptr_level += [None] * xinghao_count
     return ptr_level
 
 def get_modifier_and_base_type(words):
@@ -1277,6 +1421,7 @@ def enter_pxds(pxd_paths):
     for pxd_path in pxd_paths:
         folder, filename = get_folder_and_filename(pxd_path)
         pxd_model = enter_pxd(folder, filename)
+        pxd_model.pxd_get_cdef_classes_name()
         d[pxd_path]=pxd_model
     return d
 def get_pxds_next_pxds(pxds: dict):
@@ -1387,7 +1532,7 @@ class Enum:
 '''
 
     structs, unions, enums, fuseds = {}, {}, {}, {}, {}
-    for t in model.define_types.values():
+    for t in model.define_struct_union_enum_fuseds.values():
         if isinstance(t, Struct):
             class_text, show_func_text = get_struct_union_class_and_show_func()
         elif isinstance(t, Union):
@@ -1452,6 +1597,7 @@ cdef {func_name}({name} v):
 def get_name(name:str, names:set):
     while(name in names):
         name +='0'
+    names.add(name)
     return name
 
 
@@ -1464,8 +1610,13 @@ if __name__ == '__main__':
         model.get_all()
         print(model, model.get_all_cimport_types(pxd_paths))
     pxds = enter_pxds(pxd_paths)
-
     print(pxds)
+    for model in models:
+        model.get_cimport_types_final_type(pxds)
+        model.get_all_appeared_type_final_type()
+        print(model.all_appeared_type_final_types)
+        symbol = model.get_all_symbol()
+    print(models)
 
 
 # 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
