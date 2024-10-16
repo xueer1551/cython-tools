@@ -36,7 +36,7 @@ func_name_and_arg_and_suffix=rf'(?P<type_and_name>[^()]+){func_args_and_suffix}'
 modifiers_=r'(?:(?:public\s+)?(?:api\s+)?(?:inline\s+)?(?P<volatile_const>volatile\s+const\s+|const\s+volatile\s+)?)'
 func=modifiers_+func_name_and_arg_and_suffix
 extern_func=re.compile(r'\s*'+modifiers_+r'(?P<type_and_name>[^()]+)\s*\((?P<args>[^()]*)\)(?P<suffix>.*)', re.DOTALL)
-cdef_func=re.compile(fr'\s*(?:async\s+)?(?:c?p?def)\s+{func}', re.DOTALL)
+cdef_func=re.compile(fr'\s*(?:async\s+)?(?P<cpdef>c?p?def)\s+{func}', re.DOTALL)
 async_func=re.compile(rf'\s*(?:async\s+)?(?:def)\s+{func_name_and_arg_and_suffix}', re.DOTALL)
 ctypedef_func0=re.compile(rf'\s*ctypedef\s+'+modifiers_+r'(?P<type_and_name>[^()]+)\s*\((?P<args>[^()]*)\)(?P<suffix>.*)', re.DOTALL)
 ctypedef_func1=re.compile(rf'\s*ctypedef\s+{modifiers_}(?P<type>(?:[_\w]+\s+)+)(?:\(\s*\**(?P<name>[_\w]+)\s*\))'+r'\((?P<args>[^()]*)\)(?P<suffix>.*)', re.DOTALL)
@@ -96,18 +96,20 @@ class M:
 
 
 def create_func(rr:re.Match, parent_vars_symbol_table: dict) :
-    modifier_text, type_and_name_text, args_text, suffix_text = rr.groups()
+    cpdef, modifier_text, type_and_name_text, args_text, suffix_text = rr.groups()
     modifier = tuple(sorted(words_.findall(modifier_text))) if modifier_text else tuple()
     return_type, func_name = get_func_return_type_and_name(type_and_name_text, modifier)
-    func = Func(func_name, return_type, args_text, suffix_text)
+    func = Func(func_name, return_type, args_text, suffix_text, cpdef, rr.group())
     parent_vars_symbol_table[func_name] = func
     return func
 
 
 class Func(M):
-    __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil', 'c_declare_vars', 'vars')
-    def __init__(self, name:str, return_type: str, args_text: str, suffix_text:str):
+    __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil', 'c_declare_vars', 'vars', 'cpdef', 'text')
+    def __init__(self, name:str, return_type: str, args_text: str, suffix_text:str, cpdef: str, text):
         self.name, self.return_type, self.args_text, self.suffix_text = name, return_type, args_text, suffix_text
+        self.cpdef = cpdef
+        self.text=text
         if args_text:
             args = {}
             get_cdef_func_args(self.args_text, args)
@@ -162,8 +164,14 @@ class Ctype:
         assert not self.memoryview
         return Ctype( self.base_type_name, self.modifiers, ptr_level+self.ptr_levels, False)
     def __eq__(self, other):
-        return self.base_type_name == other.base_type_name and self.modifiers==other.modifiers and self.ptr_levels == other.ptr_levels and self.memoryview==other.memoryview
+        return self.base_type_name == other.base_type_name and eq_modifiers(self.modifiers, other.modifiers) and self.ptr_levels == other.ptr_levels and self.memoryview==other.memoryview
 
+def eq_modifiers(m0, m1):
+    any0, any1 =not any(m0), not any(m1)
+    if any0 == any1:
+        return True
+    else:
+        return m0==m1
 class CClass(M):
     __slots__ = ('name', 'type', 'public_attrs', 'private_attrs', 'readonly_attrs', 'funcs' )
     def __init__(self, name:str, type:str,):
@@ -198,13 +206,12 @@ class Struct(M):
     def get_show_class_name_and_func_name(self, symbols:set,  ):
         name = self.name.title()
         cls_name = get_name(name, symbols)
-        func_name = get_name(f'show_{self.name}', symbols)
+        func_name = get_name(f'show_{name}', symbols)
         return cls_name, func_name
-
-
-
-
-
+    @property
+    def defined(self):
+        return self.var_mapping_type
+    def get_show_text(self, ):
 
 
 class Union(M):
@@ -217,6 +224,14 @@ class Union(M):
         decode_cdef_line(line, self.type_mapping_type)
         self.lines.append(line)
         return False
+    def get_show_func_name(self, symbols:set,  ):
+        name = self.name.title()
+        cls_name = get_name(name, symbols)
+        func_name = get_name(f'show_{name}', symbols)
+        return cls_name, func_name
+    @property
+    def defined(self):
+        return self.var_mapping_type
 
 class Enum(M):
     __slots__ = ('name', 'vars')
@@ -229,6 +244,15 @@ class Enum(M):
         assert len(words)==1
         self.vars.append(words[0])
         return False
+    def get_show_func_name(self, symbols:set,  ):
+        name = self.name.title()
+        cls_name = get_name(name, symbols)
+        func_name = get_name(f'show_{name}', symbols)
+        return cls_name, func_name
+
+    @property
+    def defined(self):
+        return self.vars
 
 class Fused(M):
     __slots__ = ('name', 'define_types')
@@ -246,10 +270,31 @@ class Fused(M):
             code_line, suojin_len, start_lineno, end_lineno = line
             if suojin_len > 0:  # 仍在块中
                 lines[i] = (line, line_func(line, model), model)
+    def get_show_func_name(self, symbols:set,  ):
+        name = self.name.title()
+        func_name = get_name(f'show_{name}', symbols)
+        return func_name
+    @property
+    def defined(self):
+        return self.define_types
 
+
+    
 class FinalCtype(M):
     def __init__(self, t: Struct|Union|Enum|Fused|FuncSignature|object|str, modifiers, ptr_levels):
-        self.t, self.modifiers, self.ptr_levels = t, modifiers, ptr_levels
+        self.type, self.modifiers, self.ptr_levels = t, modifiers, ptr_levels
+    def get_call_show_text(self, var_name:str, show_funcs: dict, show_ptr_func_name:str, show_func_ptr_func_name: str):
+        if self.type is object:
+            return var_name
+        elif self.type is FuncSignature:
+            return f'{show_func_ptr_func_name}(&{var_name})'
+        else:
+            if not self.ptr_levels:
+                show_func_name = show_funcs[self.type]
+            else:
+                show_func_name = show_ptr_func_name
+            return f'{show_func_name}(&{var_name})'
+
 
 PyObject=('PyObject',)
 class Model(M):
@@ -274,6 +319,7 @@ class Model(M):
         self.all_ctypedef_func_ptr: dict=None
         self.all_ctypedef_bieming_final_type: dict=None
         self.all_appeared_type_final_types: dict = None
+        self.all_symbol: set=None
     def cdef_line_func(self, line: str,  model):
         return decode_cdef_line(line, self.c_declare_vars)
     def get_define_ctype_show_class_and_show_func_text(self):
@@ -307,16 +353,25 @@ class Model(M):
             names=name.split('.')
             d[(names[-1],)]=cls
         self.classes =d
-    def pxd_get_define_final_type_from_symbol(self, symbol:str):
+    def pxd_get_define_final_type(self, t: Ctype):
+        symbol: str = t.base_type_name
+        while(symbol in self.ctypedef_biemings):
+            tt=self.ctypedef_biemings[symbol]
+            tt += t.ptr_levels
+            symbol=tt.base_type_name
+            t=tt
         if symbol in self.define_struct_union_enum_fuseds:
-            return self.define_struct_union_enum_fuseds[symbol]
+            return FinalCtype(self.define_struct_union_enum_fuseds[symbol], t.modifiers, t.ptr_levels)
+        elif symbol in builtin_types or symbol in builtin_cpy_types:
+            return FinalCtype(symbol, t.modifiers, t.ptr_levels)
         elif symbol in self.classes:
-            return object
+            assert not( any(t.modifiers) or t.ptr_levels)
+            return FinalCtype(object, None, None)
         elif symbol in self.ctypedef_func_ptr:
-            return FuncSignature
+            return FinalCtype(FuncSignature, t.modifiers, t.ptr_levels)
         else:
             raise KeyError
-    def get_all_appeared_type_final_type(self):
+    def get_all_appeared_type_final_type_and_struct_union_enum_fuse_show_class_and_func(self):
         t: Ctype=None
         all_appeared_type_final_type={}
         for ts in self.all_appeared_base_type.values():
@@ -329,6 +384,7 @@ class Model(M):
         if t is object:
             return FinalCtype(object, None,None)
         else:
+            pxd_model: Model = None
             assert isinstance(t, Ctype)
             #
             if t.memoryview:
@@ -352,15 +408,14 @@ class Model(M):
                 ctype = self.all_define_ctype[name]
                 return FinalCtype(ctype, t.modifiers, tt.ptr_levels)
             #
-            elif name in self.all_cimport_final_types:
-                tt=self.all_cimport_final_types[name]
-                if tt is object:
-                    return FinalCtype(object, None,None)
-                if isinstance(tt, FuncSignature):
-                    return FinalCtype(FuncSignature, tt.modifiers, tt.ptr_levels)
-                return FinalCtype(tt.base_type_name, tt.modifiers, tt.ptr_levels)
+            elif name in self.all_cimport_types:
+                pxd_and_type_name = self.all_cimport_types[name]
+                pxd_model, type_name = pxd_and_type_name
+                t.base_type_name = (type_name,)
+                final_t = pxd_model.pxd_get_define_final_type(t)
+                return final_t
             #
-            elif name in self.ctypedef_func_ptr:
+            elif name in self.all_ctypedef_func_ptr:
                 return FinalCtype(FuncSignature, tt.modifiers, tt.ptr_levels)
             else:
                 raise AssertionError
@@ -390,7 +445,7 @@ class Model(M):
             model.get_all()
             all_classes.update(model.all_classes)
             all_funcs.update(model.all_funcs)
-            merge_dict(all_appeared_base_type_names, model.all_appeared_base_type, merge_set)
+            all_appeared_base_type_names = merge_dict(all_appeared_base_type_names, model.all_appeared_base_type, merge_set)
             all_define_ctype.update(model.all_define_ctype)
             all_ctypedef_biemings.update(model.all_ctypedef_biemings)
             all_ctypedef_func_ptr.update(model.all_ctypedef_func_ptr)
@@ -409,6 +464,7 @@ class Model(M):
         self.all_ctypedef_func_ptr = all_ctypedef_func_ptr
         self.all_vars = all_vars
         self.all_c_declare_vars = all_c_declare_vars
+        self.all_cimport_pxd_models: dict=None
         #
         self.get_all_ctypedef_bieming_final_type()
         #
@@ -416,7 +472,16 @@ class Model(M):
         for ts in ( all_classes, all_ctypedef_func_ptr, self.all_ctypedef_bieming_final_type):
             all_define_base_type.update(ts)
         self.all_define_base_type = all_define_base_type
-
+        #
+        s = set().union(builtin_ctypes).union([x[0] for x in builtin_cpy_types]).union(
+            [x[0] for x in self.all_define_ctype])
+        s = s.union(self.all_funcs).union([x[0] for x in self.all_classes]).union(
+            [x[0] for x in self.all_ctypedef_biemings])
+        s = s.union([x[0] for x in self.all_ctypedef_func_ptr]).union(self.all_from_cimports).union(self.all_vars)
+        s = s.union(self.all_c_declare_vars)
+        for x in s:
+            assert isinstance(x, str)
+        self.all_symbol = s
     def get_appeared_base_type(self):
         if not self.appeared_base_type:
             appeared_base_type={}
@@ -430,7 +495,7 @@ class Model(M):
             self.appeared_base_type=appeared_base_type
         return self.appeared_base_type
 
-    def get_all_cimport_types(self, cache_pxd: dict):
+    def get_all_cimport_types(self, cache_cimport_model: dict, cache_pxd_model: dict):
         if not self.all_cimport_types:
             if self.suffix=='.pyx':
                 define_types:dict =self.all_define_base_type
@@ -444,14 +509,14 @@ class Model(M):
                 all_from_cimports = self.all_from_cimports
                 all_cimport_types={}
                 #all_cimport_ptr_level_lens={}
-                for bieming, ctype_lens in s.items():
+                for bieming, _ in s.items():
                     assert len(bieming) == 1
                     bm: str=tuple(bieming[0].split('.'))
                     bm0=(bm[0],)
                     type_name = all_cimport_biemings[bm0]
                     from_text = all_from_cimports[type_name]
                     path = '.'.join((from_text, bieming[0]))
-                    pxd_path=get_cimport(path, cache_pxd)
+                    pxd_path=get_cimport(path, cache_cimport_model)
                     cimport_name = path.split('.')[-1]
                     all_cimport_types[bieming]=(pxd_path, type_name)
                 self.all_cimport_types=all_cimport_types
@@ -462,50 +527,145 @@ class Model(M):
                     bm0 = (bieming,)
                     type_name = self.cimport_biemings[bm0]
                     path = '.'.join((from_text, type_name))
-                    pxd_path = get_cimport(path, cache_pxd)
+                    pxd_path = get_cimport(path, cache_cimport_model)
                     all_cimport_types[bieming] = pxd_path
                     cimport_name = path.split('.')[-1]
                     all_cimport_types[bieming] = (pxd_path, type_name)
                 self.all_cimport_types=all_cimport_types
             else:
                 raise AssertionError
+            #
+            if self.suffix=='.pyx':
+                for bieming, path_and_type_name in self.all_cimport_types.items():
+                    path, type_name = path_and_type_name
+                    cimport_model: CimportModel = cache_cimport_model[path]
+                    if not cimport_model.from_cython_model:
+                        try:
+                            pxd_model:Model = cache_pxd_model[path]
+                        except KeyError:
+                            folder, filename = get_folder_and_filename(path)
+                            pxd_model = enter_pxd(folder, filename)
+                            pxd_model.pxd_get_cdef_classes_name()
+                        cache_pxd_model[path] = pxd_model
+                        self.all_cimport_types[bieming] = (pxd_model, type_name)
+                    else:
+                        raise NotImplementedError
+
         #
         return self.all_cimport_types
-    def get_cimport_types_final_type(self, pxd_models):
-        all_cimport_final_types={}
-        for name, path_and_type in self.all_cimport_types.items():
-            pxd_path, type_name = path_and_type
-            pxd: Model = pxd_models[pxd_path]
-            final_type=pxd.pxd_get_define_final_type_from_symbol((type_name,))
-            all_cimport_final_types[name]=final_type
-        self.all_cimport_final_types=all_cimport_final_types
+    def get_all_symbols_and_show_names(self):
+        symbols = self.get_all_symbol()
+        self.ptr_class_name = get_name('Ptr', symbols)
+        self.struct_class_name = get_name('Struct', symbols)
+        self.union_class_name = get_name('Union', symbols)
+        self.enum_class_name = get_name('Enum', symbols)
+        self.funcs_name = get_name('funcs', symbols)
+        #
+        self.show_type_ptr_name=get_name('show_ptr', symbols)
+        self.show_func_ptr_name = get_name('show_func', symbols)
+        self.show_class_names= {}
+        self.show_func_names={}
+        #
+        self.show_struct_names={}
+        self.show_union_names={}
+        self.show_enum_names={}
+        self.show_fused_names={}
+        self.show_no_define_type_func_name = get_name('show_no_define_type', symbols)
+        symbols.union((self.ptr_class_name, self.struct_class_name, self.union_class_name, self.enum_class_name,
+                       self.show_type_ptr_name, self.show_no_define_type_func_name, self.funcs_name))
+        #
+        final_type: FinalCtype=None
+        for final_type in self.all_appeared_type_final_type.values():
+            t : Struct|Union|Enum|Fused = final_type.type
+            #
+            if t is object or isinstance(t, str) or isinstance(t, FuncSignature):
+                continue
+            else:
+                if t.defined:
+                    cls_name = get_name(t.name, symbols)
+                    if not isinstance(t, Fused): self.show_class_names[t] = cls_name
+                    show_func_name = get_name(f'show_{t.name}', symbols)
+                    self.show_func_names[t] = show_func_name
+                else:
+                    self.show_struct_names[t] = self.show_no_define_type_func_name
+        #
+        for final_type in self.all_appeared_type_final_type.values():
+            if isinstance(t, Struct):
+            elif isinstance(t, Union):
+            elif isinstance(t, Enum):
+            elif isinstance(t, Fused):
 
+        return symbols
+    def get_show_func_text(self):
+        text = f'''
+        ctypedef {self.show_type_ptr_name}(void* ptr)
+        
+        cdef {self.show_func_ptr_name}(void* ptr):
+            raise ValueError('该类型仅声明，未定义/Not define the type, only declared')
 
+        cdef class {self.ptr_class_name}:
+            cdef char* ptr
+            cdef readonly list ptr_levels
+            cdef readonly address
+            cdef readonly len
+            cdef readonly unsigned int itemsize
+            cdef show_func* func
+            def __init__(self):pass
+            def __getattr__(self, i: int):
+                cdef char** ptr
+                if isinstance(i, int):
+                    if self.len:
+                        if i< self.len:
+                            if len(self.ptr_levels)==1:
+                                return self.func(self.ptr + self.itemsize*i)
+                            else:
+                                assert len(self.ptr_levels)>1
+                                ptr=<char**>(self.ptr + self.itemsize*i)
+                                return Ptr().set(self.ptr, self.ptr_levels[:-1], self.show_func, self.itemsize)
+                        else:
+                            raise IndexError
+                    else:
+                        raise ValueError("请先调用set_len方法设置元素个数/please call set_len method set item count")
+                else:
+                    raise KeyError
 
-def get_ctype_final_type_or_ctype(t: Ctype, biemings:dict, all_define_ctype:dict):
-    if t is object:
-        return FinalCtype(object, None, None)
-    if isinstance(t, CClass):  # cdef class
-        return FinalCtype(object, None, None)
-    if isinstance(t, FuncSignature):  # 函数指针
-        return FinalCtype(FuncSignature, None, None)
-    if isinstance(t, Ctype):
-        name=t.base_type_name
-        if name in builtin_cpy_types:
-            return FinalCtype(object, None, None)
-        while (name in biemings):
-            tt: Ctype = biemings[name]
-            tt += t.ptr_levels
-            name = tt.base_type_name
-            t=tt
-        if name in builtin_ctypes:
-            return FinalCtype(t.base_type_name, t.modifiers, t.ptr_levels)
-        if name in all_define_ctype:
-            return FinalCtype(t.base_type_name, t.modifiers, t.ptr_levels)
-        if name == PyObject and len(tt.ptr_levels) == 1:
-            return FinalCtype(t.base_type_name, t.modifiers, t.ptr_levels)
-        raise AssertionError
+            def set_len(self, l: int):
+                if isinstance(l, int):
+                    self.len=l
+                else:
+                    raise TypeError
 
+            cdef set(self, void** ptr, list ptr_levels, show_func* func, unsigned int itemsize ):
+                self.ptr=<char**>ptr[0]
+                self.address=<unsigned int>ptr
+                self.len  = ptr_levels[-1]
+                self.ptr_levels=ptr_levels
+                self.itemsize=itemsize
+                self.func=func
+                return self
+
+        class {self.struct_class_name}:
+            def __repr__(self):
+                return self.__name__+': struct'
+
+        class {self.union_class_name}:
+            def __repr__(self):
+                return self.__name__+': union'
+
+        class {self.enum_class_name}:
+            def __init__(self, name, value):
+                self.name=name
+                self.value=value
+            def __repr__(self):
+                return self.__name__+'.self.name'+': enum'
+        '''
+        func: Func=None
+        funcs_text=[]
+        for func in self.all_funcs:
+            if func.cpdef != _def:
+                funcs_text.append(f'<unsigned int><void*>&{func.name}:{func.name}')
+        text += '\n{'+''.join(funcs_text)+'}\n'
+        return text
 
 
 
@@ -549,7 +709,7 @@ def try_get_pxd(path:str):
             return p, is_pxd
     return None, False
 
-def get_cimport(text, cache_pxds:dict):
+def get_cimport(text, cache_cimport_models:dict):
     levels = text.strip('.').split('.')
     assert len(levels)>1
     path='/'.join(levels[:-1])
@@ -557,9 +717,9 @@ def get_cimport(text, cache_pxds:dict):
     from_cython_model = False
     p, is_pxd = try_get_pxd(path)
     if is_pxd: # p是pxd的路径
-        if p not in cache_pxds.keys():
+        if p not in cache_cimport_models.keys():
             cm=CimportModel(p, from_cython_model)
-            cache_pxds[p]=cm
+            cache_cimport_models[p]=cm
         else:
             pass
         return p
@@ -569,7 +729,7 @@ def get_cimport(text, cache_pxds:dict):
             p = 'cython'
             from_cython_model=True
             cm = CimportModel(p, from_cython_model)
-            cache_pxds[p]=cm
+            cache_cimport_models[p]=cm
             return p
         else:
             raise FileNotFoundError
@@ -1015,7 +1175,7 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
                 log[i] = 100
                 continue
             #
-            r = extern_struct_union_enum_fused.fullmatch(code_line)
+            r = extern_struct_union_enum_fused.match(code_line)
             if r:
                 # name, type= r.groups()
                 t=get_struct_union_enum_fused_block(r, model.define_struct_union_enum_fuseds)
@@ -1276,7 +1436,7 @@ def get_2_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s):
     elif stat is cut.cppclass:
         assert len(words)==1
         tname=words[0]
-        t=CClass(tname,cut.cppclass)
+        t=CClass(tname, cut.cppclass)
         #
         words, xinghaocount, _, fangkuohao, stat = words_xinghaocount_xinghaos_fangkuohao_stat_s[1]
         assert len(words)==1
@@ -1372,7 +1532,6 @@ def enter_pyxs(file_paths):
     enter_models_include_pyxs(models, entered_pyxs)
     return entered_pyxs
 
-
 def try_enter_pyx(path:str, entered_pyxs:dict):
     if path not in entered_pyxs:
         f, n = get_folder_and_filename(path)
@@ -1381,6 +1540,7 @@ def try_enter_pyx(path:str, entered_pyxs:dict):
         return model
     else:
         return None
+
 def enter_model_include_pyxs(model:Model, entered_pyxs:dict):
     folder, name = get_folder_and_filename(model.path)
     ps=[]
@@ -1424,27 +1584,8 @@ def enter_pxds(pxd_paths):
         pxd_model.pxd_get_cdef_classes_name()
         d[pxd_path]=pxd_model
     return d
-def get_pxds_next_pxds(pxds: dict):
-    while(True):
-        pxd_paths={}
-        for model in pxds.values():
-            model.get_all_cimport_types(pxd_paths)
-        if pxd_paths:
-            next_pxd_paths = set(pxd_paths.keys()) - set(pxds.keys())
-            new_pxds = enter_pxds(next_pxd_paths)
-            pxds.update(new_pxds)
-        else:
-            return pxds
 
-def get_cimport_type_class(models ):
-    pxd_paths = {}
-    for model in models:
-        name_mapping_path = model.get_all_cimport_types(pxd_paths)
-    #
-    pxds:dict[str,Model] = enter_pxds(pxd_paths)
-    #
-    for model in models:
-        for cimport_type in model.get_all_cimport_types():pass
+
 
 #-----------------------------------------------------------------------------------------------------------------------
 def get_builtin_ctype_class_names_and_show_func_name(model:Model):
@@ -1466,132 +1607,73 @@ def get_cimport_types_name(cimport_types, pxds:dict, bultin_class_names:dict):
         pxd: Model = pxds[pxd_path]
         #if type_name in pxd
 
-
-
-def get_show_pxd_text(model:Model):
-    text=f'''
-ctypedef show_func(void* ptr)
-cdef show_not_define_type(void* ptr):
-    raise ValueError('该类型仅声明，未定义/Not define the type, only declared')
-    
-cdef class Ptr:
-    cdef char* ptr
-    cdef readonly list ptr_levels
-    cdef readonly address
-    cdef readonly len
-    cdef readonly unsigned int itemsize
-    cdef show_func* func
-    def __init__(self):pass
-    def __getattr__(self, i: int):
-        cdef char** ptr
-        if isinstance(i, int):
-            if self.len:
-                if i< self.len:
-                    if len(self.ptr_levels)==1:
-                        return self.func(self.ptr + self.itemsize*i)
-                    else:
-                        assert len(self.ptr_levels)>1
-                        ptr=<char**>(self.ptr + self.itemsize*i)
-                        return Ptr().set(self.ptr, self.ptr_levels[:-1], self.show_func, self.itemsize)
-                else:
-                    raise IndexError
-            else:
-                raise ValueError("请先调用set_len方法设置元素个数/please call set_len method set item count")
-        else:
-            raise KeyError
-            
-    def set_len(self, l: int):
-        if isinstance(l, int):
-            self.len=l
-        else:
-            raise TypeError
-            
-    cdef set(self, void** ptr, list ptr_levels, show_func* func, unsigned int itemsize ):
-        self.ptr=<char**>ptr[0]
-        self.address=<unsigned int>ptr
-        self.len  = ptr_levels[-1]
-        self.ptr_levels=ptr_levels
-        self.itemsize=itemsize
-        self.func=func
-        return self
-        
-class Struct:
-    def __repr__(self):
-        return self.__name__+': struct'
-        
-class Union:
-    def __repr__(self):
-        return self.__name__+': union'
-        
-class Enum:
-    def __init__(self, name, value):
-        self.name=name
-        self.value=value
-    def __repr__(self):
-        return self.__name__+'.self.name'+': enum'
-'''
-
-    structs, unions, enums, fuseds = {}, {}, {}, {}, {}
-    for t in model.define_struct_union_enum_fuseds.values():
-        if isinstance(t, Struct):
-            class_text, show_func_text = get_struct_union_class_and_show_func()
-        elif isinstance(t, Union):
-            unions.append(t)
-        elif isinstance(t, Enum):
-            enums.append(t)
-        elif isinstance(t, Fused):
-            fuseds.append(t)
-
-def get_struct_union_class_and_show_func(t:Struct|Union, all_used_name:set, struct_or_union:str):
-    name = t.name
-    class_name = get_name(t.name.title(), model.get_all_appeared_base_type())
+def get_struct_union_class_and_show_func(type_name:str, class_name, jicheng_name:str, type_mapping_show_func: dict):
     class_text = f'''
-class {class_name}({struct_or_union}):
+class {class_name}({jicheng_name}):
     def __init__(self, d):
         self.__dict__ = d
     '''
-    func_name=f'show_{class_name}'
-    func_names=model.get_all_funcs()
-    func_text = get_struct_union_show_func(name, func_name, t.var_mapping_type, class_name)
+    func_text = get_struct_union_show_func(type_name, class_name, type_mapping_show_func)
+    return class_text+func_text
 
-def get_class(t:Struct|Union, jicheng: str):
-    cls_name = get_name(t.name.title(), model.get_all_appeared_base_type())
-    return f'''
-class {cls_name.upper()}({jicheng}):
-    def __init__(self, d):
-        self.__dict__ = d
+def get_struct_union_show_func( type_name:str, class_name:str, func_name:str, var_mapping_type, type_mapping_show_func_name: dict, ctype_mapping_final_type:dict):
+    text =f'''
+cdef {func_name}(volatile {type_name}* vp):
+    cdef {type_name} v=vp[0]
     '''
+    ts=[]
+    att_ctype: Ctype = None
+    for att_name, att_ctype in var_mapping_type:
+        assert isinstance(att_ctype, Ctype) and not att_ctype.memoryview
+        final_t :FinalCtype = ctype_mapping_final_type[att_ctype]
+        show_func_name : str = type_mapping_show_func_name[att_ctype]
+        ts.append(f'"{att_name}":{show_func_name}(&({type_name}.{att_name}))')
 
-def get_struct_union_show_func( name:str, func_name:str, attrs):
-    struct =f'''
-cdef {func_name}(void* vp):
-    cdef {name}* v=<{name}*>vp
-    '''
-    atts=[]
-    for att_name, att_ctype in attrs:
-        if isinstance(att_ctype, Ctype) and not att_ctype.memoryview:
-            atts.append(f'"{att_name}":show_{att_name}(&({name}.{att_name}))')
-        else:
-            atts.append(f'"{att_name}":{att_name}')
-    struct += '\n    d= {' + ', '.joi0n(atts) + '}'
-    struct += f'\n    return {name.upper()}(d)'
-    return struct
+    text += '\n    d= {' + ', '.joi0n(ts) + '}'
+    text += f'\n    return {class_name}(d)'
+    return text
 
-def get_enum_show_func(type_name:str, func_type_name:str, values):
+def get_enum_show_func(type_name:str, jicheng:str, class_name:str, func_name:str, values):
     enum=f'''
-cdef {func_type_name}(void* vp):
-    cdef {type_name} v=<{type_name}*>vp '''
+class {class_name}({jicheng}):
+    def __init__(self, text, value):
+        self.text, self.value = text, value
+    def __str__(self):
+        return self.text
+    def __repr__(self):
+        return self.value
+        
+cdef {func_name}(volatile {type_name}* vp):
+    cdef {type_name} v=vp[0] '''
+    #
     for value in values:
-        enum+=f'\n    if v=={type_name}.{value}: return Enum("{type_name}.{value}", <unsigned int>v)'
-    enum +='   raise AssertionError'
+        enum+=f'\n    if v=={type_name}.{value}: return {class_name}("{value}", <unsigned int>v)'
+    enum +=f'   raise AssertionError\n   return {class_name}()'
+    #
     return enum
 
-def get_fused_show_func(name:str, types, func_name:str, many_word_mapping_one_word: dict):
-    fused=f'''
-cdef {func_name}({name} v):
-        '''
+def get_fused_show_func(type_name:str, types:list[FinalCtype], func_name:str, symbols:set, type_mapping_show_func_name: dict, ctype_mapping_final_type:dict ):
+    t: Ctype=None
+    t_mapping_one_word_name = {}
+    names=[]
+    fused=''
     for t in types:
-        fused +=f'\n    if {name}=={t.name}: return show_{'_'.join(t.name)}(&v)'
+        tb = t.base_type_name
+        if len(tb)==1:
+            names.append((t, tb, tb))
+        else:
+            t_name = get_name('_'.join(tb), symbols)
+            many_word_name = " ".join(tb)
+            fused += f'\nctypedef {many_word_name} {t_name}'
+            names.append((t, tb, t_name))
+            t_mapping_one_word_name[tb]=t_name
+    #
+    fused+=f'''
+cdef {func_name}({type_name} v):
+        '''
+    for t, many_word_name, one_word_name in names:
+        final_t :FinalCtype = ctype_mapping_final_type[t.base_type_name]
+        fused +=f'\n    if {many_word_name}=={one_word_name}: return {}(&v)'
     fused += '\n   raise AssertionError'
 
 def get_name(name:str, names:set):
@@ -1600,22 +1682,23 @@ def get_name(name:str, names:set):
     names.add(name)
     return name
 
+def tuple_name_to_str_name(name: tuple[str]):
+    return '_'.join(name)
 
 if __name__ == '__main__':
     folder='D:/xrdb'
     entered_pyxs=enter_folder_all_pyx(folder)
     models=list(entered_pyxs.values())
-    pxd_paths={}
+    cache_cimort_models, cache_pxd_models={}, {}
     for model in models:
         model.get_all()
-        print(model, model.get_all_cimport_types(pxd_paths))
-    pxds = enter_pxds(pxd_paths)
-    print(pxds)
+        print(model, model.get_all_cimport_types({},{}))
+
     for model in models:
-        model.get_cimport_types_final_type(pxds)
-        model.get_all_appeared_type_final_type()
+        model.get_all_appeared_type_final_type_and_struct_union_enum_fuse_show_class_and_func()
         print(model.all_appeared_type_final_types)
         symbol = model.get_all_symbol()
+        print()
     print(models)
 
 
