@@ -363,7 +363,7 @@ class Model(M):
         self.all_appeared_base_type: set=None
         self.all_define_ctype: set=None
         self.appeared_base_type: dict={}
-        self.all_include_models: list=None
+        self.all_include_models: list=[]
         self.all_cimport_types: dict=None
         self.all_cimport_biemings: dict=None
         self.all_from_cimports: dict=None
@@ -374,8 +374,12 @@ class Model(M):
         self.all_ctypedef_bieming_final_type: dict=None
         self.all_appeared_type_final_type: dict = None
         self.all_symbol: set=None
+        self.cimport_lines: list=[]
+        self.all_cimport_lines: list=[]
+
     def cdef_line_func(self, line: str,  model):
         return decode_cdef_line(line, self.c_declare_vars)
+
     def get_define_ctype_show_class_and_show_func_text(self):
         symbols=self.get_all_symbol()
         for t in self.all_define_ctype:pass
@@ -392,23 +396,20 @@ class Model(M):
             self.all_symbol = s
         return self.all_symbol
 
-    def get_all_include_models(self):
+    def get_all_include_models(self, all_include_models):
         if not self.includes_models:
             folder = self.folder
             for filepath in self.includes:
                 pyx_model=enter_pyx(folder, filepath)
                 self.includes_models.add(pyx_model)
         #
-        if not self.all_include_models:
-            model: Model
-            all_include_models=list(self.includes_models)
-            s= self.includes_models
-            for model in self.includes_models:
-                m_a_i_m: list = model.get_all_include_models()
-                all_include_models += m_a_i_m
-                #all_include_models=all_include_models.union(m_a_i_m)
-            self.all_include_models=all_include_models
-        return self.all_include_models
+        model: Model
+        #all_include_models=list(self.includes_models)
+        #s= self.includes_models
+        for model in self.includes_models:
+            model.get_all_include_models(all_include_models)
+        all_include_models += list(self.includes_models)
+        return all_include_models
     def pxd_get_cdef_classes_name(self):
         d={}
         for name, cls in self.classes.items():
@@ -484,7 +485,7 @@ class Model(M):
             all_ctypedef_bieming_final_type[name]=t
         self.all_ctypedef_bieming_final_type=all_ctypedef_bieming_final_type
     def get_all(self):
-        self.get_all_include_models()
+        self.get_all_include_models(self.all_include_models)
         all_classes = copy.deepcopy(self.classes)
         all_funcs = copy.deepcopy(self.funcs)
         all_from_cimports = copy.deepcopy(self.from_cimport)
@@ -493,8 +494,8 @@ class Model(M):
         all_ctypedef_biemings = copy.deepcopy(self.ctypedef_biemings)
         all_ctypedef_func_ptr = copy.deepcopy(self.ctypedef_func_ptr)
         all_vars=self.vars.copy()
-        all_include_models = self.get_all_include_models()
         all_c_declare_vars = copy.deepcopy(self.c_declare_vars)
+        self.all_cimport_lines=self.cimport_lines.copy()
         for model in self.includes_models:
             model.get_all()
             all_classes.update(model.all_classes)
@@ -508,6 +509,7 @@ class Model(M):
             all_c_declare_vars.update(model.all_c_declare_vars)
             all_vars += model.all_vars
             all_cimport_biemings.update(model.all_cimport_biemings)
+            self.all_cimport_lines += model.all_cimport_lines
         self.all_from_cimports = all_from_cimports
         self.all_cimport_biemings = all_cimport_biemings
         self.all_define_ctype = all_define_ctype
@@ -629,24 +631,34 @@ class Model(M):
             cls_name=''
             for word in words:
                 cls_name += word.title()
-    @property
-    def code_lines(self):
+
+    def get_no_cimport_code_lines(self):
         l=[]
         for i in range(len(self.lines)):
             x=self.lines[i]
             if x:
                 flag=x[1]
-                assert flag is None or isinstance(flag, list) or flag is _cdef or flag is _nogil
-                line = x[2]
-                assert isinstance(line, tuple)
-                l.append(x[2][0])
+                if not flag is _cimport:
+                    assert flag is None or isinstance(flag, list) or flag is _cdef or flag is _nogil
+                    line = x[2]
+                    assert isinstance(line, tuple)
+                    l.append(line[0])
+                else:
+                    continue
         return l
-    @property
-    def text(self):
-        return ''.join(self.code_lines)
+    def get_all_cimport_text(self):
+        t=''.join(self.all_cimport_lines)
+        return t
+    def get_no_cimport_text(self):
+        t=''.join(self.get_no_cimport_code_lines())
+        return t
     def get_all_text(self):
-        return self.text+ f'\n{'#'*50}\n' + f'\n{'#'*50}\n'.join([model.text for model in self.all_include_models])
-
+        text = self.get_all_cimport_text()
+        text += f'\n{'#'*50}\n' + f'\n{'#'*50}\n'.join([model.get_no_cimport_text() for model in self.all_include_models])
+        text += f'\n{'#'*50}\n'+self.get_no_cimport_text()
+        return text
+    def rewrite_code_to_show(self):
+        NotImplementedError
     def get_show_text(self):
         symbols = self.get_all_symbol()
         self.ptr_class_name = get_name('Ptr', symbols)
@@ -668,16 +680,20 @@ cdef class {self.ptr_class_name}:
     cdef {self.show_type_ptr_name}* func
     def __init__(self):pass
     def __getattr__(self, i: int):
-        cdef char** ptr
+        cdef :
+            char* ptr
+            unsigned int offset
         if isinstance(i, int):
             if self.len:
                 if i< self.len:
                     if len(self.ptr_levels)==1:
-                        return self.func(self.ptr + self.itemsize*i)
+                        offset = self.itemsize*<unsigned int>i
+                        return self.func(self.ptr + offset)
                     else:
+                        offset = self.itemsize*<unsigned int>i
                         assert len(self.ptr_levels)>1
-                        ptr=<char**>(self.ptr + self.itemsize*i)
-                        return Ptr().set(self.ptr, self.ptr_levels[:-1], self.show_func, self.itemsize)
+                        ptr=self.ptr + offset
+                        return Ptr().set(<volatile const void**>ptr, self.ptr_levels[:-1], self.func, self.itemsize)
                 else:
                     raise IndexError
             else:
@@ -691,8 +707,8 @@ cdef class {self.ptr_class_name}:
         else:
             raise TypeError
 
-    cdef set(self, volatile const void** ptr, list ptr_levels, show_func* func, unsigned int itemsize ):
-        self.ptr=<volatile char**>ptr[0]
+    cdef set(self, volatile const void** ptr, list ptr_levels, {self.show_type_ptr_name}* func, unsigned int itemsize ):
+        self.ptr=<char*>ptr[0]
         self.address=<unsigned int>ptr
         self.len  = ptr_levels[-1]
         self.ptr_levels=ptr_levels[:-1]
@@ -729,9 +745,9 @@ cdef class {self.ptr_class_name}:
         showed =set()
         for final_t in fina_ts:
             t = final_t.type
-            tt = type(t)
-            if tt in s :
-                if tt not in showed:
+            tp = type(t)
+            if tp in s :
+                if tp not in showed:
                     if isinstance(t, Fused):
                         type_name = t.name
                         func_name =show_func_names[(type_name,)]
@@ -758,7 +774,7 @@ cdef class {self.ptr_class_name}:
                             text += tt
                         else:
                             assert final_t.ptr_levels
-                    showed.add(tt)
+                    showed.add(tp)
                     show_func_names[type_name] = func_name
                 else:
                     continue
@@ -803,7 +819,7 @@ def get_funcs_appeared_base_types(funcs, appeared_base_type):
 
 builtin_ctypes=['void', 'Py_buffer','bint', 'char', 'signed char', 'unsigned char', 'short', 'unsigned short', 'signed short','int', 'unsigned int','signed int',
                 'long', 'unsigned long', 'signed long', 'long long', 'unsigned long long', 'signed long long','float', 'double', 'long double',
-                'float complex', 'double complex', 'long double complex', 'size_t', 'Py_ssize_t', 'Py_hash_t', 'Py_UCS4','Py_Unicode']
+                'float complex', 'double complex', 'long double complex', 'size_t', 'Py_ssize_t', 'Py_hash_t', 'Py_UCS4',]
 builtin_cpy_types=['list','set','tuple','dict','str','unicode','bytes','bytearray','object']
 kongbais=re.compile(r'\s+')
 builtin_types= set()
@@ -834,7 +850,7 @@ cdef class {class_name}:
 '''
     text +='''
     def __repr__(self):
-        return f"address in hex({self.ptr}), value is {self.v}"
+        return f"address in hex({self.ptr[0]}), value is {self.v}"
         '''
     text +=f'''
     
@@ -939,7 +955,7 @@ cdef {func_name}(volatile const {type_name}* ptr, ptr_levels):'''
         final_t :FinalCtype=model.all_appeared_type_final_type[part]#show变量指针
         show_base_type_func_name = model.show_func_names[final_t.type]
         # cdef set(self, volatile const void** ptr, list ptr_levels, show_func* func, unsigned int itemsize )
-        text += f'\n    if {type_name}=={one_word}: return {model.ptr_class_name}().set(&ptr, ptr_levels, &{show_base_type_func_name}, sizeof({one_word}))'
+        text += f'\n    if {type_name}=={one_word}: return {model.ptr_class_name}().set(<volatile const void**>&ptr, ptr_levels, &{show_base_type_func_name}, sizeof({one_word}))'
     text += '\n    raise AssertionError'
     return text
 #-----------------------------------------------------------------------------------------------------------------------
@@ -1183,13 +1199,16 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
                 log[i] = 7
                 cimport, names_text = r.groups()
                 if cimport == _cimport:
+                    model.cimport_lines.append(code_line)
                     names = get_as_biemings(names_text)
                     ns=[]
                     for bieming, name in names:
                         model.cimport_biemings[(bieming,)]=name
                         model.from_cimport[name] = ''
                         ns.append(name)
-                lines[i] = (model, None, line)
+                    lines[i] = (model, _cimport, line)
+                else:
+                    lines[i] = (model, None, line)
                 pre_i, pre_enter = i, 7
                 i += 1
                 continue
@@ -1199,13 +1218,16 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
                 log[i] = 8
                 from_text, cimport, names_text = r.groups()
                 if cimport == _cimport:
+                    model.cimport_lines.append(code_line)
                     names = get_as_biemings(names_text)
                     ns=[]
                     for bieming, name in names:
                         model.cimport_biemings[(bieming,)] = name
                         model.from_cimport[name] = from_text
                         ns.append(name)
-                lines[i] = (model, None, line)
+                    lines[i] = (model, _cimport, line)
+                else:
+                    lines[i] = (model, None, line)
                 pre_i, pre_enter = i, 8
                 i += 1
                 continue
@@ -1224,7 +1246,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             if not code_line or all_kongbai.fullmatch(code_line):
                 pass
             else:
-                print(f'该行认为无需管， 物理行开始和结束[{start_lineno},{end_lineno}), 内容：{code_line}，逻辑行号:{i}' )
+                print(f'该行认为无需处理， 物理行开始和结束[{start_lineno},{end_lineno}), 内容：{code_line}，逻辑行号:{i}' )
             i+=1
         else:
             if not check_code_line_have_content(code_line):
@@ -1351,7 +1373,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
                 continue
             raise AssertionError
         else:
-            if jinghaozhushi.match(code_line): # #………………
+            if jinghaozhushi.match(code_line) or all_kongbai.fullmatch(code_line): # #………………
                 log[i] = 16
                 lines[i] = (cls, None, line)
                 i+=1
@@ -1867,7 +1889,7 @@ def get_name(name:str, names:set):
     return name
 
 
-def get_debug_code(pyx_path:str, output_folder:str):
+def test_debug_code(pyx_path:str, output_folder:str):
     folder, filename = os.path.split(pyx_path)
     model :Model= enter_pyx(folder, filename)
     model.get_all()
@@ -1884,7 +1906,9 @@ def get_debug_code(pyx_path:str, output_folder:str):
 
 if __name__ == '__main__':
     folder='D:/xrdb'
-    get_debug_code('D:/xrdb/graph.pyx', 'D:/xrdb/debugger')
+    test_debug_code(r"D:\xrdb\debugger\test_other\cbhandles.pyx", 'D:/xrdb/debugger')
+    #test_debug_code('D:/xrdb/graph.pyx', 'D:/xrdb/debugger')
+
 
 
 # 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助
