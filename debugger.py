@@ -105,15 +105,16 @@ def create_func(rr:re.Match, parent_vars_symbol_table: dict) :
 
 
 class Func(M):
-    __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil', 'c_declare_vars', 'vars', 'cpdef', 'text')
+    __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil', 'c_declare_vars', 'args', 'vars', 'cpdef', 'text')
     def __init__(self, name:str, return_type: str, args_text: str, suffix_text:str, cpdef: str, text):
         self.name, self.return_type, self.args_text, self.suffix_text = name, return_type, args_text, suffix_text
         self.cpdef = cpdef
         self.text=text
+        self.args={}
         if args_text:
             args = {}
             get_cdef_func_args(self.args_text, args)
-            self.c_declare_vars, self.vars= args,  list(args.keys())
+            self.c_declare_vars, self.vars, self.args = args,  list(args.keys()), copy.deepcopy(args)
         else:
             self.c_declare_vars, self.vars = {}, []
         if nogil_.search(suffix_text):
@@ -133,6 +134,14 @@ class Func(M):
         r=left_value_express.match(code_line)
         if r:
             get_left_express(r, self.vars)
+    def have_fused_arg(self, ctype_mapping_final_type: dict):
+        for arg in self.args.values():
+            if isinstance(arg, Ctype):
+                final_t: FinalCtype = ctype_mapping_final_type[arg]
+                ft = final_t.type
+                if isinstance(ft , Fused):
+                    return True
+        return False
 
 class FuncSignature(M):
     __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil')
@@ -199,7 +208,7 @@ class Struct(M):
     def line_func(self, line:str, model:Model):
         decode_cdef_line(line, self.var_mapping_type)
         self.lines.append(line)
-        return False
+        return None
     def get_enter(self):
         if self.var_mapping_type: #(明确了成员)
             pass
@@ -211,7 +220,9 @@ class Struct(M):
     @property
     def defined(self):
         return self.var_mapping_type
-    def get_show_text(self, ):
+    @property
+    def appeared_types(self, ):
+        return self.var_mapping_type.values()
 
 
 class Union(M):
@@ -223,7 +234,7 @@ class Union(M):
     def line_func(self, line:str, model:Model):
         decode_cdef_line(line, self.type_mapping_type)
         self.lines.append(line)
-        return False
+        return None
     def get_show_func_name(self, symbols:set,  ):
         name = self.name.title()
         cls_name = get_name(name, symbols)
@@ -232,6 +243,10 @@ class Union(M):
     @property
     def defined(self):
         return self.var_mapping_type
+
+    @property
+    def appeared_types(self, ):
+        return self.var_mapping_type.values()
 
 class Enum(M):
     __slots__ = ('name', 'vars')
@@ -254,16 +269,22 @@ class Enum(M):
     def defined(self):
         return self.vars
 
+
 class Fused(M):
-    __slots__ = ('name', 'define_types')
+    __slots__ = ('name', 'define_struct_union_enum_fuseds')
     def __init__(self,name: str):
         self.name=name
         self.define_struct_union_enum_fuseds=[]
     def line_func(self, line: str, model:Model):
-        words = words_.findall(line)
-        assert len(words) == 1
-        self.define_struct_union_enum_fuseds.append(words[0])
-        return False
+        words_xinghaocount_xinghaos_fangkuohao_stat_s = cut.split_by_fangkuohao_and_del_yuan_kuohao(line)
+        assert len(words_xinghaocount_xinghaos_fangkuohao_stat_s)==1
+        words, xinghaocount, _, fangkuohao, stat = words_xinghaocount_xinghaos_fangkuohao_stat_s[0]
+        if xinghaocount!=0: raise NotImplementedError
+        if not fangkuohao: raise NotImplementedError
+        words=tuple([x.strip() for x in words] )
+        t = Ctype( tuple(words), (None,None), [], False)
+        self.define_struct_union_enum_fuseds.append(t)
+        return None
     def enter(self, code_lines:list, start_i:int, l:int, lines:list, model:Model, line_func ):
         for i in range(start_i, l):
             line = code_lines[i]
@@ -276,30 +297,63 @@ class Fused(M):
         return func_name
     @property
     def defined(self):
-        return self.define_types
+        return self.define_struct_union_enum_fuseds
+    @property
+    def appeared_types(self, ):
+        return self.define_struct_union_enum_fuseds
 
 
     
 class FinalCtype(M):
-    def __init__(self, t: Struct|Union|Enum|Fused|FuncSignature|object|str, modifiers, ptr_levels):
+    def __init__(self, t: Struct|Union|Enum|Fused|FuncSignature|object|tuple, modifiers, ptr_levels):
         self.type, self.modifiers, self.ptr_levels = t, modifiers, ptr_levels
-    def get_call_show_text(self, var_name:str, show_funcs: dict, show_ptr_func_name:str, show_func_ptr_func_name: str):
+    def __repr__(self):
+        return f'{self.type}: FinalCtype'
+    def get_call_show_text(self, var_name:str, model:Model):
         if self.type is object:
             return var_name
-        elif self.type is FuncSignature:
-            return f'{show_func_ptr_func_name}(&{var_name})'
         else:
-            if not self.ptr_levels:
-                show_func_name = show_funcs[self.type]
-            else:
-                show_func_name = show_ptr_func_name
-            return f'{show_func_name}(&{var_name})'
+            if self.ptr_levels:
+                if not self.type is FuncSignature: #不是函数指针
+                    if isinstance(self.type, tuple):#内置类型指针
+                        type_name=self.type[0]
+                        if not type_name=='void' and not type_name=='Py_buffer': #已知类型指针
+                            show_base_type_func_name:str = model.show_func_names[self.type]
+                        else: #void指针
+                            assert len(self.ptr_levels) > 1
+                            show_base_type_func_name: str = model.show_no_define_type_func_name
+                        base_type_name = ' '.join(self.type)
+                        return f'{model.ptr_class_name}().set(&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}))'
+                    else: #Struct or Union or Enum or Fused
+                        if not isinstance(self.type , Fused):
+                            base_type_name = self.type.name
+                            show_base_type_func_name:str = model.show_func_names[base_type_name]
+                            return f'{model.ptr_class_name}().set(&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}))'
+                        else:
+                            show_base_type_func_name: str = model.fused_ptr_show_func_names[self.type]
+                            return f'{show_base_type_func_name}(&{var_name}, {self.ptr_levels})'
+                        #
 
+                else: #函数指针
+                    if len(self.ptr_levels)==1:
+                        return f'{model.show_func_ptr_name}({var_name})'
+                    else:
+                        show_base_type_func_name:str = model.show_func_ptr_name
+                        return f'{model.ptr_class_name}().set(&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof(void*))'
+            else:
+                if not self.type is FuncSignature:
+                    show_func_name = model.show_func_names[self.type]
+                    if not isinstance(self.type, Fused):
+                        return f'{show_func_name}(&{var_name})'
+                    else:
+                        return f'{show_func_name}({var_name})'
+                else: # 省略了*的函数指针
+                    return f'{model.show_func_ptr_name}({var_name})'
 
 PyObject=('PyObject',)
 class Model(M):
-    def __init__(self, name:str, path:str, suffix:str ):
-        self.name, self.path, self.suffix = name, path, suffix
+    def __init__(self, name:str, folder:str, suffix:str ):
+        self.name, self.folder, self.suffix = name, folder, suffix
         self.funcs, self.vars, self.from_cimport, self.includes = {},[],{},[]
         self.classes={}
         self.cimport_biemings={}
@@ -309,7 +363,7 @@ class Model(M):
         self.all_appeared_base_type: set=None
         self.all_define_ctype: set=None
         self.appeared_base_type: dict={}
-        self.all_include_models: set=None
+        self.all_include_models: list=None
         self.all_cimport_types: dict=None
         self.all_cimport_biemings: dict=None
         self.all_from_cimports: dict=None
@@ -318,7 +372,7 @@ class Model(M):
         self.ctypedef_func_ptr: dict={}
         self.all_ctypedef_func_ptr: dict=None
         self.all_ctypedef_bieming_final_type: dict=None
-        self.all_appeared_type_final_types: dict = None
+        self.all_appeared_type_final_type: dict = None
         self.all_symbol: set=None
     def cdef_line_func(self, line: str,  model):
         return decode_cdef_line(line, self.c_declare_vars)
@@ -339,12 +393,20 @@ class Model(M):
         return self.all_symbol
 
     def get_all_include_models(self):
+        if not self.includes_models:
+            folder = self.folder
+            for filepath in self.includes:
+                pyx_model=enter_pyx(folder, filepath)
+                self.includes_models.add(pyx_model)
+        #
         if not self.all_include_models:
             model: Model
-            all_include_models=self.includes_models
+            all_include_models=list(self.includes_models)
+            s= self.includes_models
             for model in self.includes_models:
-                m_a_i_m = model.get_all_include_models()
-                all_include_models=all_include_models.union(m_a_i_m)
+                m_a_i_m: list = model.get_all_include_models()
+                all_include_models += m_a_i_m
+                #all_include_models=all_include_models.union(m_a_i_m)
             self.all_include_models=all_include_models
         return self.all_include_models
     def pxd_get_cdef_classes_name(self):
@@ -371,14 +433,6 @@ class Model(M):
             return FinalCtype(FuncSignature, t.modifiers, t.ptr_levels)
         else:
             raise KeyError
-    def get_all_appeared_type_final_type_and_struct_union_enum_fuse_show_class_and_func(self):
-        t: Ctype=None
-        all_appeared_type_final_type={}
-        for ts in self.all_appeared_base_type.values():
-            for t in ts:
-                final_t = self.get_define_final_type_from_ctype(t)
-                all_appeared_type_final_type[t]=final_t
-        self.all_appeared_type_final_type=all_appeared_type_final_type
 
     def get_define_final_type_from_ctype(self, t: Ctype|object|FuncSignature, ):
         if t is object:
@@ -411,8 +465,8 @@ class Model(M):
             elif name in self.all_cimport_types:
                 pxd_and_type_name = self.all_cimport_types[name]
                 pxd_model, type_name = pxd_and_type_name
-                t.base_type_name = (type_name,)
-                final_t = pxd_model.pxd_get_define_final_type(t)
+                ttt = Ctype((type_name,), t.modifiers, t.ptr_levels, t.memoryview)
+                final_t = pxd_model.pxd_get_define_final_type(ttt)
                 return final_t
             #
             elif name in self.all_ctypedef_func_ptr:
@@ -430,6 +484,7 @@ class Model(M):
             all_ctypedef_bieming_final_type[name]=t
         self.all_ctypedef_bieming_final_type=all_ctypedef_bieming_final_type
     def get_all(self):
+        self.get_all_include_models()
         all_classes = copy.deepcopy(self.classes)
         all_funcs = copy.deepcopy(self.funcs)
         all_from_cimports = copy.deepcopy(self.from_cimport)
@@ -437,7 +492,6 @@ class Model(M):
         all_define_ctype = copy.deepcopy(self.define_struct_union_enum_fuseds)
         all_ctypedef_biemings = copy.deepcopy(self.ctypedef_biemings)
         all_ctypedef_func_ptr = copy.deepcopy(self.ctypedef_func_ptr)
-        all_appeared_base_type_names = self.get_appeared_base_type()
         all_vars=self.vars.copy()
         all_include_models = self.get_all_include_models()
         all_c_declare_vars = copy.deepcopy(self.c_declare_vars)
@@ -445,18 +499,19 @@ class Model(M):
             model.get_all()
             all_classes.update(model.all_classes)
             all_funcs.update(model.all_funcs)
-            all_appeared_base_type_names = merge_dict(all_appeared_base_type_names, model.all_appeared_base_type, merge_set)
+            #all_appeared_base_type_names = merge_dict(all_appeared_base_type_names, model.all_appeared_base_type, merge_set)
             all_define_ctype.update(model.all_define_ctype)
             all_ctypedef_biemings.update(model.all_ctypedef_biemings)
             all_ctypedef_func_ptr.update(model.all_ctypedef_func_ptr)
             all_cimport_biemings.update(model.all_cimport_biemings)
             all_from_cimports.update(model.all_from_cimports)
+            all_c_declare_vars.update(model.all_c_declare_vars)
             all_vars += model.all_vars
             all_cimport_biemings.update(model.all_cimport_biemings)
         self.all_from_cimports = all_from_cimports
         self.all_cimport_biemings = all_cimport_biemings
         self.all_define_ctype = all_define_ctype
-        self.all_appeared_base_type = all_appeared_base_type_names
+        #self.all_appeared_base_type = all_appeared_base_type_names
         self.all_funcs = all_funcs
         self.all_classes = all_classes
         self.all_define_ctype = all_define_ctype
@@ -465,6 +520,8 @@ class Model(M):
         self.all_vars = all_vars
         self.all_c_declare_vars = all_c_declare_vars
         self.all_cimport_pxd_models: dict=None
+        #
+        self.get_all_appeared_base_type()
         #
         self.get_all_ctypedef_bieming_final_type()
         #
@@ -482,23 +539,33 @@ class Model(M):
         for x in s:
             assert isinstance(x, str)
         self.all_symbol = s
-    def get_appeared_base_type(self):
+
+    def get_all_final_type(self):
+        #
+        all_appeared_type_final_type = {}
+        for ts in self.all_appeared_base_type.values():
+            for t in ts:
+                final_t = self.get_define_final_type_from_ctype(t)
+                all_appeared_type_final_type[t] = final_t
+        self.all_appeared_type_final_type = all_appeared_type_final_type
+    def get_all_appeared_base_type(self):
         if not self.appeared_base_type:
             appeared_base_type={}
-            for func in self.funcs.values():
-                get_all_c_declare_var_types(func.c_declare_vars.values(), appeared_base_type)
-                rt = func.return_type
-                if isinstance(rt, Ctype) and rt.base_type_name not in appeared_base_type:
-                    appeared_base_type[rt.base_type_name] = set((rt,))
-            get_all_c_declare_var_types(self.c_declare_vars.values(), appeared_base_type)
-            get_all_c_declare_var_types(self.ctypedef_biemings.values(), appeared_base_type)
-            self.appeared_base_type=appeared_base_type
-        return self.appeared_base_type
+            for cls in self.all_classes.values():
+                get_funcs_appeared_base_types(cls.funcs.values(), appeared_base_type)
+            for t in self.all_define_ctype.values():
+                if not isinstance(t, Enum):
+                    get_all_c_declare_var_types(t.appeared_types, appeared_base_type)
+            get_funcs_appeared_base_types(self.all_funcs.values(), appeared_base_type)
+            get_all_c_declare_var_types(self.all_c_declare_vars.values(), appeared_base_type)
+            get_all_c_declare_var_types(self.all_ctypedef_biemings.values(), appeared_base_type)
+            self.all_appeared_base_type=appeared_base_type
+        return self.all_appeared_base_type
 
     def get_all_cimport_types(self, cache_cimport_model: dict, cache_pxd_model: dict):
         if not self.all_cimport_types:
             if self.suffix=='.pyx':
-                define_types:dict =self.all_define_base_type
+                define_struct_union_enum_fuseds:dict =self.all_define_base_type
                 appeared_types:dict =self.all_appeared_base_type
                 s={}
                 for name, v in appeared_types.items():
@@ -553,125 +620,188 @@ class Model(M):
 
         #
         return self.all_cimport_types
-    def get_all_symbols_and_show_names(self):
+
+    def get_builtin_type_show_text(self):
+        it = iter(builtin_types)
+        next(it) #舍弃void
+        for name in it:
+            words = name.split(' ')
+            cls_name=''
+            for word in words:
+                cls_name += word.title()
+    @property
+    def code_lines(self):
+        l=[]
+        for i in range(len(self.lines)):
+            x=self.lines[i]
+            if x:
+                flag=x[1]
+                assert flag is None or isinstance(flag, list) or flag is _cdef or flag is _nogil
+                line = x[2]
+                assert isinstance(line, tuple)
+                l.append(x[2][0])
+        return l
+    @property
+    def text(self):
+        return ''.join(self.code_lines)
+    def get_all_text(self):
+        return self.text+ f'\n{'#'*50}\n' + f'\n{'#'*50}\n'.join([model.text for model in self.all_include_models])
+
+    def get_show_text(self):
         symbols = self.get_all_symbol()
         self.ptr_class_name = get_name('Ptr', symbols)
-        self.struct_class_name = get_name('Struct', symbols)
-        self.union_class_name = get_name('Union', symbols)
-        self.enum_class_name = get_name('Enum', symbols)
-        self.funcs_name = get_name('funcs', symbols)
-        #
-        self.show_type_ptr_name=get_name('show_ptr', symbols)
+        self.show_type_ptr_name = get_name('show_ptr', symbols)
         self.show_func_ptr_name = get_name('show_func', symbols)
-        self.show_class_names= {}
-        self.show_func_names={}
-        #
-        self.show_struct_names={}
-        self.show_union_names={}
-        self.show_enum_names={}
-        self.show_fused_names={}
         self.show_no_define_type_func_name = get_name('show_no_define_type', symbols)
-        symbols.union((self.ptr_class_name, self.struct_class_name, self.union_class_name, self.enum_class_name,
-                       self.show_type_ptr_name, self.show_no_define_type_func_name, self.funcs_name))
-        #
-        final_type: FinalCtype=None
-        for final_type in self.all_appeared_type_final_type.values():
-            t : Struct|Union|Enum|Fused = final_type.type
-            #
-            if t is object or isinstance(t, str) or isinstance(t, FuncSignature):
-                continue
-            else:
-                if t.defined:
-                    cls_name = get_name(t.name, symbols)
-                    if not isinstance(t, Fused): self.show_class_names[t] = cls_name
-                    show_func_name = get_name(f'show_{t.name}', symbols)
-                    self.show_func_names[t] = show_func_name
-                else:
-                    self.show_struct_names[t] = self.show_no_define_type_func_name
-        #
-        for final_type in self.all_appeared_type_final_type.values():
-            if isinstance(t, Struct):
-            elif isinstance(t, Union):
-            elif isinstance(t, Enum):
-            elif isinstance(t, Fused):
-
-        return symbols
-    def get_show_func_text(self):
         text = f'''
-        ctypedef {self.show_type_ptr_name}(void* ptr)
-        
-        cdef {self.show_func_ptr_name}(void* ptr):
-            raise ValueError('该类型仅声明，未定义/Not define the type, only declared')
+ctypedef {self.show_type_ptr_name}(volatile const void* ptr)
 
-        cdef class {self.ptr_class_name}:
-            cdef char* ptr
-            cdef readonly list ptr_levels
-            cdef readonly address
-            cdef readonly len
-            cdef readonly unsigned int itemsize
-            cdef show_func* func
-            def __init__(self):pass
-            def __getattr__(self, i: int):
-                cdef char** ptr
-                if isinstance(i, int):
-                    if self.len:
-                        if i< self.len:
-                            if len(self.ptr_levels)==1:
-                                return self.func(self.ptr + self.itemsize*i)
-                            else:
-                                assert len(self.ptr_levels)>1
-                                ptr=<char**>(self.ptr + self.itemsize*i)
-                                return Ptr().set(self.ptr, self.ptr_levels[:-1], self.show_func, self.itemsize)
-                        else:
-                            raise IndexError
+cdef {self.show_no_define_type_func_name}(volatile const void* ptr):
+    raise ValueError('该类型仅声明，未定义/Not define the type, only declared')
+
+cdef class {self.ptr_class_name}:
+    cdef char* ptr
+    cdef readonly list ptr_levels
+    cdef readonly address
+    cdef readonly len
+    cdef readonly unsigned int itemsize
+    cdef {self.show_type_ptr_name}* func
+    def __init__(self):pass
+    def __getattr__(self, i: int):
+        cdef char** ptr
+        if isinstance(i, int):
+            if self.len:
+                if i< self.len:
+                    if len(self.ptr_levels)==1:
+                        return self.func(self.ptr + self.itemsize*i)
                     else:
-                        raise ValueError("请先调用set_len方法设置元素个数/please call set_len method set item count")
+                        assert len(self.ptr_levels)>1
+                        ptr=<char**>(self.ptr + self.itemsize*i)
+                        return Ptr().set(self.ptr, self.ptr_levels[:-1], self.show_func, self.itemsize)
                 else:
-                    raise KeyError
+                    raise IndexError
+            else:
+                raise ValueError("请先调用set_len方法设置元素个数/please call set_len method set item count")
+        else:
+            raise KeyError
 
-            def set_len(self, l: int):
-                if isinstance(l, int):
-                    self.len=l
+    def set_len(self, l: int):
+        if isinstance(l, int):
+            self.len=l
+        else:
+            raise TypeError
+
+    cdef set(self, volatile const void** ptr, list ptr_levels, show_func* func, unsigned int itemsize ):
+        self.ptr=<volatile char**>ptr[0]
+        self.address=<unsigned int>ptr
+        self.len  = ptr_levels[-1]
+        self.ptr_levels=ptr_levels[:-1]
+        self.itemsize=itemsize
+        self.func=func
+        return self'''
+        self.show_func_names=show_func_names= {}
+        fused_ptr_show_func_names={}
+
+        # 内置类型的show_func
+        for name in builtin_ctypes[2:]:
+            tuple_name = tuple(name.split(' '))
+            class_name = get_name(get_class_name_from_tuple_name(tuple_name), symbols)
+            func_name = get_name(f'show_{'_'.join(tuple_name)}', symbols)
+            tt = get_builtin_type_show_text(class_name, func_name, name)
+            text += tt
+            show_func_names[tuple_name] = func_name
+        # 定义类型的show_func
+        final_t: FinalCtype =None
+        s=set([Struct, Union, Enum, Fused])
+        fina_ts = list(self.all_appeared_type_final_type.values())
+        for final_t in fina_ts:
+            t = final_t.type
+            tt=type(t)
+            if tt in s:
+                if t.defined:
+                    type_name = (t.name,)
+                    func_name = get_name(f'show_{t.name}', symbols)
+                    show_func_names[type_name] = func_name
+                else: #未定义的struct
+                    type_name = (t.name,)
+                    show_func_names[type_name] = self.show_no_define_type_func_name
+        #
+        showed =set()
+        for final_t in fina_ts:
+            t = final_t.type
+            tt = type(t)
+            if tt in s :
+                if tt not in showed:
+                    if isinstance(t, Fused):
+                        type_name = t.name
+                        func_name =show_func_names[(type_name,)]
+                        parts = t.define_struct_union_enum_fuseds
+                        ptr_func_name = get_name(f'show_{type_name}_ptr', symbols)
+                        tt = get_fused_show_text(type_name, func_name, parts, self)
+                        ttt = call_fused_choose_base_type_show_func(type_name, ptr_func_name, parts, self)
+                        text += tt+ttt
+                        fused_ptr_show_func_names[type_name] = ptr_func_name
+                    elif isinstance(t, Enum):
+                        type_name = t.name
+                        func_name = show_func_names[(type_name,)]
+                        class_name = get_name(type_name.title(), symbols)
+                        parts = t.vars
+                        tt=get_enum_show_text(class_name, type_name, func_name, parts)
+                        text += tt
+                    elif isinstance(t,Struct) or isinstance(t, Union): # Struct or Union
+                        type_name = t.name
+                        func_name = show_func_names[(type_name,)]
+                        class_name = get_name(type_name, symbols)
+                        parts = t.var_mapping_type.items()
+                        if parts:
+                            tt=get_struct_or_union_show_text(class_name, type_name, func_name, parts, self.all_appeared_type_final_type, self)
+                            text += tt
+                        else:
+                            assert final_t.ptr_levels
+                    showed.add(tt)
+                    show_func_names[type_name] = func_name
                 else:
-                    raise TypeError
-
-            cdef set(self, void** ptr, list ptr_levels, show_func* func, unsigned int itemsize ):
-                self.ptr=<char**>ptr[0]
-                self.address=<unsigned int>ptr
-                self.len  = ptr_levels[-1]
-                self.ptr_levels=ptr_levels
-                self.itemsize=itemsize
-                self.func=func
-                return self
-
-        class {self.struct_class_name}:
-            def __repr__(self):
-                return self.__name__+': struct'
-
-        class {self.union_class_name}:
-            def __repr__(self):
-                return self.__name__+': union'
-
-        class {self.enum_class_name}:
-            def __init__(self, name, value):
-                self.name=name
-                self.value=value
-            def __repr__(self):
-                return self.__name__+'.self.name'+': enum'
-        '''
-        func: Func=None
-        funcs_text=[]
-        for func in self.all_funcs:
+                    continue
+            #
+        #
+        self.fused_ptr_show_func_names=fused_ptr_show_func_names
+        # 函数指针的show_func
+        func: Func = None
+        funcs_text = []
+        d_funcs_name = get_name('d_funcs', symbols)
+        for func in self.all_funcs.values():
             if func.cpdef != _def:
-                funcs_text.append(f'<unsigned int><void*>&{func.name}:{func.name}')
-        text += '\n{'+''.join(funcs_text)+'}\n'
+                if not func.have_fused_arg(self.all_appeared_type_final_type):
+                    funcs_text.append(f"<unsigned int><void*>&{func.name}:'''{func.text}'''")
+                else:
+                    continue
+        text += f'\n{d_funcs_name}=' + '{' + ', '.join(funcs_text) + '}\n'
+        text += f'''
+cdef {self.show_func_ptr_name}(volatile const void* ptr):
+    try:
+        return {d_funcs_name}[<unsigned int>ptr]
+    except KeyError:
+        return None
+        '''
+
         return text
 
 
+def get_class_name_from_tuple_name(tuple_name: tuple):
+    text=''
+    for word in tuple_name:
+        text +=word.title()
+    return text
 
+def get_funcs_appeared_base_types(funcs, appeared_base_type):
+    func: Func=None
+    for func in funcs:
+        get_all_c_declare_var_types(func.c_declare_vars.values(), appeared_base_type)
+        rt = func.return_type
+        if isinstance(rt, Ctype) and rt.base_type_name not in appeared_base_type:
+            appeared_base_type[rt.base_type_name] = set((rt,))
 
-
-builtin_ctypes=['void', 'bint', 'char', 'signed char', 'unsigned char', 'short', 'unsigned short', 'signed short','int', 'unsigned int','signed int',
+builtin_ctypes=['void', 'Py_buffer','bint', 'char', 'signed char', 'unsigned char', 'short', 'unsigned short', 'signed short','int', 'unsigned int','signed int',
                 'long', 'unsigned long', 'signed long', 'long long', 'unsigned long long', 'signed long long','float', 'double', 'long double',
                 'float complex', 'double complex', 'long double complex', 'size_t', 'Py_ssize_t', 'Py_hash_t', 'Py_UCS4','Py_Unicode']
 builtin_cpy_types=['list','set','tuple','dict','str','unicode','bytes','bytearray','object']
@@ -682,7 +812,136 @@ for cts in (builtin_ctypes,builtin_cpy_types):
         builtin_types.add(tuple(kongbais.split(ct)))
 builtin_cpy_types = set([(x,) for x in builtin_cpy_types])
 
+def get_builtin_type_show_text(class_name: str, func_name:str,type_name: str):
+    text = f'''
+    
+cdef class {class_name}:
+    cdef :
+        volatile {type_name}* ptr
+    cdef set(self, volatile const void* ptr):
+        self.ptr=<volatile {type_name}*>ptr
+        return self
+    def set_from_address(self, address):
+        return self.set(<volatile const void*><unsigned int>address)
+    def set_from_object(self, obj):
+        self.ptr[0]=<{type_name}>obj
+    @property
+    def ptr(self):
+        return <unsigned int>self.ptr
+    @property
+    def v(self):
+        return self.ptr[0]
+'''
+    text +='''
+    def __repr__(self):
+        return f"address in hex({self.ptr}), value is {self.v}"
+        '''
+    text +=f'''
+    
+cdef {func_name}(volatile const void* ptr):
+    return {class_name}().set(ptr)'''
+    return text
 
+def get_struct_or_union_show_text(class_name:str, type_name:str, func_name:str, parts, ctype_mapping_final_type:dict, model):
+    text=f'''
+    
+cdef class {class_name}:
+    cdef :
+        volatile {type_name}* ptr
+        dict __dict__
+    cdef set(self, volatile const void* ptr):
+        self.ptr=<volatile {type_name}*>ptr
+        self.__dict__ = {"{"}'''
+    assert parts
+    for part_name, part_type in parts:
+        assert isinstance(part_type, Ctype) and not part_type.memoryview
+        final_t: FinalCtype = ctype_mapping_final_type[part_type]
+        var_name = f'self.ptr.{part_name}'
+        call_show_text = final_t.get_call_show_text(var_name, model)
+        text += f' "{part_name}": {call_show_text}, '
+    #
+    text += '''}
+        return self
+        
+    cpdef set_from_address(self, address):
+        return self.set(<volatile const void*><unsigned int>address)
+        '''
+    #
+    text += f'''
+    
+cdef {func_name}(volatile const void* ptr):
+    return {class_name}().set(ptr)'''
+
+    return text
+
+def get_enum_show_text(class_name:str, type_name:str, func_name:str, parts,):
+    text=f'''
+    
+cdef class {class_name}:
+    cdef :
+        volatile {type_name}* ptr
+    cdef readonly:
+        str text
+        object value
+    cdef set(self, volatile const void* ptr):
+        self.ptr=<volatile {type_name}*>ptr
+        cdef {type_name} v=self.ptr[0]
+        '''
+    assert parts
+    it=iter(parts)
+    part = next(it)
+    text += f'\n        if v=={type_name}.{part}: self.v, self.text = <unsinged int>v, "{part}" '
+    for part in it:
+        text += f'\n        elif v=={type_name}.{part}: self.v, self.text = <unsinged int>v, "{part}" '
+    text +='\n        else: raise AssertionError\n        return self'
+    text +=f'''
+    
+cdef {func_name}(volatile const void* ptr):
+    return {class_name}().set(ptr)'''
+
+def get_fused_ctypedef_one_word(parts, symbols):
+    text = ''
+    part: Ctype = None
+    d_words = {}
+    for part in parts:
+        if len(part.base_type_name) > 1:
+            many_word = ' '.join(part.base_type_name)
+            one_word = get_name('_'.join(part.base_type_name), symbols)
+            d_words[part] = one_word
+            text += f'ctypedef {many_word} {one_word}'
+    return text, d_words
+
+def get_fused_show_text(type_name:str, func_name:str, parts, model):
+    text, d_words=get_fused_ctypedef_one_word(parts, model.all_symbol)
+    text+=f'''
+    
+cdef {func_name}(volatile const {type_name}* ptr):'''
+    for part in parts:
+        try:
+            one_word = d_words[part]
+        except KeyError:
+            one_word = part.base_type_name[0]
+        final_t :FinalCtype=model.all_appeared_type_final_type[part] # show变量
+        call_show_text = final_t.get_call_show_text('ptr', model)
+        text += f'\n    if {type_name}=={one_word}: return {call_show_text}'
+    return text
+
+def call_fused_choose_base_type_show_func( type_name:str, func_name:str, parts, model ):
+    text, d_words = get_fused_ctypedef_one_word(parts, model.all_symbol)
+    text += f'''
+    
+cdef {func_name}(volatile const {type_name}* ptr, ptr_levels):'''
+    for part in parts:
+        try:
+            one_word = d_words[part]
+        except KeyError:
+            one_word = part.base_type_name[0]
+        final_t :FinalCtype=model.all_appeared_type_final_type[part]#show变量指针
+        show_base_type_func_name = model.show_func_names[final_t.type]
+        # cdef set(self, volatile const void** ptr, list ptr_levels, show_func* func, unsigned int itemsize )
+        text += f'\n    if {type_name}=={one_word}: return {model.ptr_class_name}().set(&ptr, ptr_levels, &{show_base_type_func_name}, sizeof({one_word}))'
+    text += '\n    raise AssertionError'
+    return text
 #-----------------------------------------------------------------------------------------------------------------------
 timeout=3*10**10
 
@@ -755,12 +1014,12 @@ def merge_list(v0:list, v1:list):
 def merge_set(v0:set, v1:set):
     return v0|v1
 
-def get_all_c_declare_var_types(define_types, all_base_type_names:dict):
+def get_all_c_declare_var_types(define_struct_union_enum_fuseds, all_base_type_names:dict):
     t: Ctype
-    for t in define_types: # t: Ctype
+    for t in define_struct_union_enum_fuseds: # t: Ctype
         if isinstance(t, Ctype):
             tbn=t.base_type_name
-            if tbn in all_base_type_names.keys():
+            if tbn in all_base_type_names:
                 s=all_base_type_names[t.base_type_name]
                 s.add(t)
             else:
@@ -782,7 +1041,7 @@ def enter_model_file(folder:str, filename:str, suffix:str):
     assert filename[-4:] == suffix
     name = filename[:-4]
     path = os.path.join(folder, filename)
-    model = Model(name, path, suffix)
+    model = Model(name, folder, suffix)
     f = open_utf8(path)
     text = f.read()
     code_lines = cut.cut_line(text)
@@ -809,6 +1068,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             #
             r=no_used.match(code_line)
             if r:
+                lines[i] = (model, None, line)
                 i+=1
                 continue
             #
@@ -828,6 +1088,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             r = ctypedef_func0.match(code_line)
             if r:
                 log[i] = 11
+                lines[i] = (model, None, line)
                 get_ctypedef_func0_signature(r, model.ctypedef_func_ptr)
                 pre_i, pre_enter = i, 11
                 i += 1
@@ -836,6 +1097,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             r = ctypedef_func1.match(code_line)
             if r:
                 log[i] = 12
+                lines[i] = (model, None, line)
                 get_ctypedef_func1_signature(r, model.ctypedef_func_ptr)
                 pre_i, pre_enter = i, 12
                 i += 1
@@ -854,6 +1116,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             r=cdef_struct_union_enum_fused.match(code_line)
             if r:
                 log[i] = 2
+                lines[i] = (model, None, line)
                 i=enter_struct_union_enum_fused_block(r, code_lines, suojin_len, i+1, l, lines, model, log, 20)
                 assert pre_i < i
                 pre_i, pre_enter = i, 2
@@ -952,6 +1215,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
                 log[i] = 9
                 name = r.groups()[0]
                 model.includes.append(name)
+                line = (f'#{code_line}', suojin_len, start_lineno, end_lineno )
                 lines[i]=(model, None, line)
                 pre_i, pre_enter = i, 9
                 i += 1
@@ -995,12 +1259,12 @@ def enter_func_block( code_lines: iter, sj_len: int, start_i: int, l: int, lines
             cdef_sj_len=suojin_len
             r = cdef_block.match(code_line)
             if r:
-                lines[i]=(func, None, '')
+                lines[i]=(func, _cdef, line)
                 for ii in range(i+1, l):
                     line = code_lines[i]
                     code_line, suojin_len, _, __ = line
                     if suojin_len > cdef_sj_len:
-                        lines[ii] = (func, func.cdef_block_line_func(code_line, model), code_line[:cdef_sj_len]+_cdef+code_line)
+                        lines[ii] = ( func, func.cdef_block_line_func(code_line, model), code_line[:cdef_sj_len] + _cdef + code_line )
                     else:
                         i=ii
                         break
@@ -1031,6 +1295,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
             if r:
                 public=r.groups()[0]
                 log[i] = 10
+                lines[i]=(cls, _cdef, line)
                 if public == 'readonly':
                     i=enter_block(code_lines, suojin_len, cls.readonly_line_func, i+1,l, lines, cls, model)
                 elif public == 'public':
@@ -1044,6 +1309,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
             r=cdef_func.match(code_line)
             if r:
                 log[i] = 11
+                lines[i] = (cls, None, line)
                 func=create_func(r, cls.funcs)
                 i=enter_func_block(code_lines, suojin_len, i+1, l, lines, func, model)
                 assert pre_i < i
@@ -1060,7 +1326,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
                     attr_names = cls.public_line_func(code_line, model)
                 else:
                     attr_names = cls.private_line_func(code_line, model)
-                lines[i] = (cls, attr_names, code_line)
+                lines[i] = (cls, attr_names, line)
                 i += 1
                 assert pre_i < i
                 pre_i, pre_enter = i, 2
@@ -1069,6 +1335,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
             r=no_used.match(code_line)
             if r:
                 log[i] = 13
+                lines[i] = (cls, None, line)
                 i+=1
                 assert pre_i < i
                 pre_i, pre_enter = i, 3
@@ -1077,14 +1344,16 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
             r= not check_code_line_have_content(code_line)
             if r:
                 log[i] = 14
+                lines[i] = (cls, None, line)
                 i+=1
                 assert pre_i < i
                 pre_i, pre_enter = i, 4
                 continue
             raise AssertionError
         else:
-            if jinghaozhushi.match(code_line):
+            if jinghaozhushi.match(code_line): # #………………
                 log[i] = 16
+                lines[i] = (cls, None, line)
                 i+=1
                 continue
             else:
@@ -1139,9 +1408,13 @@ def enter_block( code_lines: iter, sj_len: int, line_func:callable,  start_i: in
         line = code_lines[i]
         code_line, suojin_len, start_lineno, end_lineno = line
         if suojin_len > sj_len:
-            if check_code_line_have_content(code_line):
-                lines[i]=(block, line_func(code_line, model), code_line)
-                log[i]=log_v
+            if jinghaozhushi.match(code_line):
+                lines[i] = (block, None, line)
+            elif not all_kongbai.fullmatch(code_line):
+                lines[i] = (block, line_func(code_line, model), line)
+            else:
+                lines[i]=(block, None, line)
+
         else:
             return i
     return l
@@ -1165,13 +1438,13 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
         code_line, suojin_len, start_lineno, end_lineno = line
         if suojin_len>sj_len:
             if no_used.match(code_line):
+                lines[i] = (model, None, line)
                 i+=1
                 continue
             #
             r=cdef_struct_union_enum_fused.match(code_line)
             if r:
                 i=enter_struct_union_enum_fused_block(r, code_lines, suojin_len, i+1, l, lines, model, log, 1000)
-                lines[i]=(model, r, code_line)
                 log[i] = 100
                 continue
             #
@@ -1200,7 +1473,6 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
             r=extern_func.match(code_line)
             if r:
                 get_extern_func_signature(r, model.funcs)
-                lines[i]=(model, r, code_line)
                 log[i]=101
                 i+=1
                 continue
@@ -1208,7 +1480,6 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
             r = ctypedef_class.match(code_line)
             if r:
                 type, name,_, __ = r.groups()
-                lines[i] = (model, None, line)
                 log[i] = 1
                 name = name.strip()
                 cls = CClass(name, type)
@@ -1220,7 +1491,6 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
             r=cdef_func.match(code_line)
             if r:
                 get_extern_func_signature(r, model.funcs)
-                lines[i]=(model, r, code_line)
                 i=break_block(code_lines, sj_len, i+1, l)
                 log[i] = 102
                 continue
@@ -1229,7 +1499,6 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
             if r:
                 log[i] = 10
                 get_ctypede_type_bieming(r, model.ctypedef_biemings)
-                lines[i] = (model, None, line)
                 i += 1
                 continue
             #
@@ -1302,6 +1571,7 @@ def get_func(modifier_text, type_and_name_text, args_text, suffix_text, parent_v
             self_vars_symbol_table[var_name]=tt
 
 strip_type_zhushi=re.compile('')
+_none, _not ='None', 'not'
 def get_cdef_func_args(args_text: str, symbol_table:dict): #注意ctypedef的不能用这个
     #print(args_text, '////')
     type_and_names=cut.cut_douhao_and_strip(args_text)
@@ -1312,6 +1582,7 @@ def get_cdef_func_args(args_text: str, symbol_table:dict): #注意ctypedef的不
             type_and_name = left
         else:
             type_and_name=type_and_name_text
+        type_and_name = type_and_name[:-2] if len(type_and_name)>2 and type_and_name[-1]==_none and type_and_name[-2]==_not else type_and_name
         t, name, _=get_type_and_name(type_and_name)
         symbol_table[name]=t
 
@@ -1588,93 +1859,6 @@ def enter_pxds(pxd_paths):
 
 
 #-----------------------------------------------------------------------------------------------------------------------
-def get_builtin_ctype_class_names_and_show_func_name(model:Model):
-    exists_class_names=set(model.get_all_classes().keys())
-    exists_func_names=set(model.get_all_funcs().keys())
-    type_mapping_class_name={}
-    type_mapping_show_func_name={}
-    all_base_types=model.get_all_appeared_base_type()
-    for name in all_base_types:
-        words = name.split(' ')
-        class_name = get_name(''.join([x.title() for x in words]), exists_class_names)
-        func_name = get_name('show_'+'_'.join(words), exists_func_names)
-        type_mapping_class_name[name]=class_name
-        type_mapping_show_func_name[name]=func_name
-
-def get_cimport_types_name(cimport_types, pxds:dict, bultin_class_names:dict):
-    for bieming, path_and_name in cimport_types:
-        pxd_path, type_name = path_and_name
-        pxd: Model = pxds[pxd_path]
-        #if type_name in pxd
-
-def get_struct_union_class_and_show_func(type_name:str, class_name, jicheng_name:str, type_mapping_show_func: dict):
-    class_text = f'''
-class {class_name}({jicheng_name}):
-    def __init__(self, d):
-        self.__dict__ = d
-    '''
-    func_text = get_struct_union_show_func(type_name, class_name, type_mapping_show_func)
-    return class_text+func_text
-
-def get_struct_union_show_func( type_name:str, class_name:str, func_name:str, var_mapping_type, type_mapping_show_func_name: dict, ctype_mapping_final_type:dict):
-    text =f'''
-cdef {func_name}(volatile {type_name}* vp):
-    cdef {type_name} v=vp[0]
-    '''
-    ts=[]
-    att_ctype: Ctype = None
-    for att_name, att_ctype in var_mapping_type:
-        assert isinstance(att_ctype, Ctype) and not att_ctype.memoryview
-        final_t :FinalCtype = ctype_mapping_final_type[att_ctype]
-        show_func_name : str = type_mapping_show_func_name[att_ctype]
-        ts.append(f'"{att_name}":{show_func_name}(&({type_name}.{att_name}))')
-
-    text += '\n    d= {' + ', '.joi0n(ts) + '}'
-    text += f'\n    return {class_name}(d)'
-    return text
-
-def get_enum_show_func(type_name:str, jicheng:str, class_name:str, func_name:str, values):
-    enum=f'''
-class {class_name}({jicheng}):
-    def __init__(self, text, value):
-        self.text, self.value = text, value
-    def __str__(self):
-        return self.text
-    def __repr__(self):
-        return self.value
-        
-cdef {func_name}(volatile {type_name}* vp):
-    cdef {type_name} v=vp[0] '''
-    #
-    for value in values:
-        enum+=f'\n    if v=={type_name}.{value}: return {class_name}("{value}", <unsigned int>v)'
-    enum +=f'   raise AssertionError\n   return {class_name}()'
-    #
-    return enum
-
-def get_fused_show_func(type_name:str, types:list[FinalCtype], func_name:str, symbols:set, type_mapping_show_func_name: dict, ctype_mapping_final_type:dict ):
-    t: Ctype=None
-    t_mapping_one_word_name = {}
-    names=[]
-    fused=''
-    for t in types:
-        tb = t.base_type_name
-        if len(tb)==1:
-            names.append((t, tb, tb))
-        else:
-            t_name = get_name('_'.join(tb), symbols)
-            many_word_name = " ".join(tb)
-            fused += f'\nctypedef {many_word_name} {t_name}'
-            names.append((t, tb, t_name))
-            t_mapping_one_word_name[tb]=t_name
-    #
-    fused+=f'''
-cdef {func_name}({type_name} v):
-        '''
-    for t, many_word_name, one_word_name in names:
-        final_t :FinalCtype = ctype_mapping_final_type[t.base_type_name]
-        fused +=f'\n    if {many_word_name}=={one_word_name}: return {}(&v)'
-    fused += '\n   raise AssertionError'
 
 def get_name(name:str, names:set):
     while(name in names):
@@ -1682,24 +1866,25 @@ def get_name(name:str, names:set):
     names.add(name)
     return name
 
-def tuple_name_to_str_name(name: tuple[str]):
-    return '_'.join(name)
+
+def get_debug_code(pyx_path:str, output_folder:str):
+    folder, filename = os.path.split(pyx_path)
+    model :Model= enter_pyx(folder, filename)
+    model.get_all()
+    model.get_all_cimport_types({}, {})
+    model.get_all_final_type()
+    text = model.get_show_text()
+    name, suffix = os.path.splitext(filename)
+    new_filename = name + '_dbg'+suffix
+    save_filepath = os.path.join(output_folder, new_filename)
+    with open(save_filepath, 'w+', encoding='utf-8') as f:
+        f.write(model.get_all_text())
+        f.write(f'\n{'#'*50}')
+        f.write(text)
 
 if __name__ == '__main__':
     folder='D:/xrdb'
-    entered_pyxs=enter_folder_all_pyx(folder)
-    models=list(entered_pyxs.values())
-    cache_cimort_models, cache_pxd_models={}, {}
-    for model in models:
-        model.get_all()
-        print(model, model.get_all_cimport_types({},{}))
-
-    for model in models:
-        model.get_all_appeared_type_final_type_and_struct_union_enum_fuse_show_class_and_func()
-        print(model.all_appeared_type_final_types)
-        symbol = model.get_all_symbol()
-        print()
-    print(models)
+    get_debug_code('D:/xrdb/graph.pyx', 'D:/xrdb/debugger')
 
 
 # 访问 https://www.jetbrains.com/help/pycharm/ 获取 PyCharm 帮助

@@ -446,6 +446,7 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
             else:
                 pass
         i+=1
+    ll.append((PyUnicode_Substring(text, start, i), suojin, lts, lte))
     return ll
 
 cdef inline uint find_multi_hh(pyucs* t, uint i, uint l):
