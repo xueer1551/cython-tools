@@ -30,7 +30,7 @@ cdef_extern_from=re.compile(r'\s*cdef\s+(?P<public>public\s+)?extern\s+from\s+(?
 ctypedef_bieming=re.compile(r'\s*ctypedef\s+(?P<content>[^()\'"]+)(?:\s*[\'"][^\'"]*[\'"])?',re.DOTALL)
 from_import=re.compile(r'\s*from\s+(.+?)\s+(c?import)(?P<content>.+)', re.DOTALL)
 with_=re.compile(r'\s*with\s+(?P<content>.+):', re.DOTALL)
-with_nogil=re.compile(r'\s*with\s+nogil\s*:')
+with_nogil=re.compile(r'\s*with\s+(nogil|gil)\s*:')
 import_=re.compile(r'\s*(c?import)\s+(?P<content>.+)', re.DOTALL)
 func_name_and_arg_and_suffix=rf'(?P<type_and_name>[^()]+){func_args_and_suffix}'
 modifiers_=r'(?:(?:public\s+)?(?:api\s+)?(?:inline\s+)?(?P<volatile_const>volatile\s+const\s+|const\s+volatile\s+)?)'
@@ -83,7 +83,7 @@ _maohao=':'
 _array='array'
 _memoryview='memoryview'
 _nogil='nogil'
-
+_gil='gil'
 
 #-----------------------------------------------------------------------------------------------------------------------
 class M:
@@ -142,6 +142,8 @@ class Func(M):
                 if isinstance(ft , Fused):
                     return True
         return False
+    def get_all_symbol(self):
+        return set(self.vars).union(set(self.c_declare_vars.keys()))
 
 class FuncSignature(M):
     __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil')
@@ -181,6 +183,8 @@ def eq_modifiers(m0, m1):
         return True
     else:
         return m0==m1
+
+start_with_keyword=re.compile(r'(?:\s*)(public|readonly|private)')
 class CClass(M):
     __slots__ = ('name', 'type', 'public_attrs', 'private_attrs', 'readonly_attrs', 'funcs' )
     def __init__(self, name:str, type:str,):
@@ -197,6 +201,38 @@ class CClass(M):
     def private_line_func(self, line:str, model:Model):
         var_names = decode_cdef_line(line, self.private_attrs)
         return var_names
+    def block_line_func(self, line:str, model):
+        line0 = start_with_keyword.match(line)
+        if line0:
+            g = line0.groups()[0]
+            line0=start_with_keyword.sub('',line)
+            if g=='readonly':
+                return self.readonly_line_func(line0, model)
+            elif g=='public':
+                return self.public_line_func(line0, model)
+            else:
+                return self.private_line_func(line0, model)
+    def get_all_symbol(self):
+        return set(self.public_attrs.keys()).union(self.readonly_attrs.keys()).union(self.funcs.keys()).union(self.private_attrs.keys())
+    def get_rewrite_code_lines(self, lines:list, start_i:int, l:int, new_lines:list[str], model:Model):
+        for i in range(start_i, l):
+            line=new_lines[i]
+            if line:
+                block, flag, line_args=line
+                code_line, sj_len, start_lineno, end_lineno = line_args
+                if sj_len>0 :
+                    ii, min_sj_len = i, sj_len
+                    while(sj_len>0):
+                        new_lines.append(code_line)
+
+        ii, min_sj_len = i, sj_len
+        while(sj_len>0):
+
+        for i in range(start_i, l):
+            line=new_lines[i]
+            if line:
+                code_line, sj_len, start_lineno, end_lineno = line
+
 
 
 class Struct(M):
@@ -553,8 +589,12 @@ class Model(M):
     def get_all_appeared_base_type(self):
         if not self.appeared_base_type:
             appeared_base_type={}
+            cls: CClass=None
             for cls in self.all_classes.values():
                 get_funcs_appeared_base_types(cls.funcs.values(), appeared_base_type)
+                get_all_c_declare_var_types(cls.public_attrs.values(), appeared_base_type)
+                get_all_c_declare_var_types(cls.readonly_attrs.values(), appeared_base_type)
+                get_all_c_declare_var_types(cls.private_attrs.values(), appeared_base_type)
             for t in self.all_define_ctype.values():
                 if not isinstance(t, Enum):
                     get_all_c_declare_var_types(t.appeared_types, appeared_base_type)
@@ -619,7 +659,6 @@ class Model(M):
                         self.all_cimport_types[bieming] = (pxd_model, type_name)
                     else:
                         raise NotImplementedError
-
         #
         return self.all_cimport_types
 
@@ -657,8 +696,173 @@ class Model(M):
         text += f'\n{'#'*50}\n' + f'\n{'#'*50}\n'.join([model.get_no_cimport_text() for model in self.all_include_models])
         text += f'\n{'#'*50}\n'+self.get_no_cimport_text()
         return text
+    def get_model_dbg_code(self, model:Model, folder:str):
+        symbols = self.get_all_symbol()
+        dbg_model_name: str = get_name(model.name, symbols)
+        #
+        enter_symbols = set(model.all_funcs.keys()).union(model.classes.keys())
+        global_vars_names = get_name('global_vars', enter_symbols)
+        py_enter_lines = [f'{global_vars_names}=dict()\n']
+        #
+        py_enter_name: str = None
+        pre_block = model
+        lines: list = model.lines
+        dbg_lines = []
+        gil_stack = [(_gil, '', 0)]
+        cur_func, cur_func_sj_len = None, None
+        cur_cls = None
+        i, l = 0, len(lines)
+        while (i < l):
+            line = lines[i]
+            if line:
+                block, flag, code_lines = line
+                code_line, sj_len, start_lineno, end_lineno = code_lines
+                sj_text = f'{code_line[:sj_len]}{gil_text}'
+                #
+                if isinstance(block, Func):
+                    cur_func, cur_func_sj_len = block, sj_len
+                    if block is pre_block:
+                        pass
+                    else:  # 这行是函数头
+                        # 找到下一行的缩进
+                        offset = i + 1
+                        next_line = lines[offset]
+                        while (not next_line):
+                            offset += 1
+                            next_line = lines[offset]
+                        next_block, _, code_lines = line[2]
+                        next_sj_len = code_lines[1]
+                        # 查看是否是nogil函数
+                        if block.nogil:
+                            gil_stat, gil_text, gil_sj_len = _nogil, 'with nogil: ', sj_len
+                            gil_stack.append((_nogil, gil_text, gil_sj_len))
+                        #
+                        sj_text = f'{code_line[:next_sj_len]}{gil_text}'
+                        assert next_block is block
+                        #
+                        py_enter_name = get_name(block.name, symbols)
+                        start_enter_text = f'{sj_text}{py_enter_name} = {dbg_model_name}_{block.name}()\n{sj_text}next({py_enter_name})'
+                        dbg_lines.append(start_enter_text)
+                        var_names = block.args.values()
+                        show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, model,
+                                                            global_vars_names)
+                        dbg_lines.append(show_text)
+                        #
+                        enter_text = get_enter_text(var_names, code_line, next_sj_len, start_lineno, end_lineno)
+                        py_enter_lines.append(enter_text)
+                        i = offset
+                        continue
+                elif isinstance(block, Model):
+                    cur_func, py_enter_name = None, None
+                    if cur_cls:  # 刚出class块
+                        assert cls_min_sj_text
+                        cls_symbols = cur_cls.get_all_symbol()
+                        for private_attr_name, private_attr_ctype in cur_cls.private_attrs.keys():
+                            show_func_name = get_name(f'show_{private_attr_name}', cls_symbols)
+                            final_t: FinalCtype = model.all_appeared_type_final_type[private_attr_ctype]
+                            show_text = final_t.get_call_show_text(f'self.{private_attr_name}', model)
+                            method_text = f'{cls_min_sj_text}cdef {show_func_name}(self):  return {show_text}\n'
+                            dbg_lines.append(method_text)
+                        cls_min_sj_text = None
+                    cur_cls = None
+                elif isinstance(block, CClass):
+                    if block is pre_block:
+                        pass
+                    else:
+                        if isinstance(pre_block, Func):
+                            cur_func, py_enter_name = None, None
+                        else:
+                            assert isinstance(pre_block, Model)
+                            cur_cls, cls_min_sj_text = block, code_line[:sj_len]
+                else:
+                    raise AssertionError
+                # 查询并更新当前gil状态
+                if not gil_stack:
+                    pass
+                else:
+                    while (gil_stack):
+                        gil_stat, gil_text, gil_sj_len = gil_stack.pop()
+                        if gil_sj_len > sj_len:
+                            break
+                        else:
+                            continue
+                    gil_stack.append((gil_stat, gil_text, gil_sj_len))
+                # 生成暴露给python空间的代码
+                if isinstance(flag, list):
+                    var_names = flag
+                    show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, model,
+                                                        global_vars_names)
+                    dbg_lines.append(code_line)
+                    dbg_lines.append(show_text)
+                    #
+                    py_enter_lines.append(get_enter_text(var_names, code_line, sj_len, start_lineno, end_lineno))
+                elif flag == _cdef:  # cdef: 块 要改写成一个个cdef ……行
+                    cdef_block_sj_len = sj_len
+                    sj_kongbai_text = code_line[:sj_len]  # 当前cdef所在的缩进
+                    # 进入cdef 块直到跳出(缩进长度小于等于块头缩进长度)
+                    i += 1
+                    while (i < l):
+                        line = lines[i]
+                        if line:
+                            block, flag, code_lines = line
+                            code_line, sj_len, start_lineno, end_lineno = code_lines
+                            if sj_len > cdef_block_sj_len:
+                                assert isinstance(flag, list)
+                                var_names = flag
+                                new_line = f'{sj_kongbai_text}cdef {code_line}'
+                                sj_text = f'{sj_kongbai_text}{gil_text}'
+                                show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, model,
+                                                                    global_vars_names)
+                                dbg_lines.append(new_line)
+                                dbg_lines.append(show_text)
+                                #
+                                enter_text = get_enter_text(var_names, new_line, sj_len, start_lineno, end_lineno)
+                                py_enter_lines.append(enter_text)
+                                i += 1
+                            else:
+                                break
+                    continue
+                elif flag == _nogil:
+                    nogil_text = 'with gil: '
+                    gil_stack.append((_nogil, nogil_text, sj_len))
+                    dbg_lines.append(code_line)
+                elif flag == _gil:
+                    assert gil_stat == _nogil
+                    gil_stack.append((_gil, '', sj_len))
+                    dbg_lines.append(code_line)
+                else:
+                    dbg_lines.append(code_line)
+            else:
+                py_enter_lines.append('\n')
+                dbg_lines.append('\n')
+        #
+        dbg_filename = os.path.join(folder, )
+        enter_filename = os.path.join(folder, dbg_model_name, '.py')
+        with open(enter_filename, 'w+', encoding='utf-8') as f:
+            f.writelines(py_enter_lines)
+        return
     def rewrite_code_to_show(self):
-        NotImplementedError
+        symbols = self.all_symbol
+        for model in self.all_include_models:
+            self.get_model_dbg_code(model)
+
+
+
+
+    def get_show_vars_text(self, var_names: list[str], sj_text:str, py_enter_name: str, cur_func:Func, model:Model, global_vars_name:str ):
+        fts = []
+        for var_name in var_names:
+            final_t: FinalCtype = get_var_final_type(var_name, cur_func, model)
+            fts.append(final_t.get_call_show_text(var_name, self))
+            show_vars = ', '.join(fts)
+        if cur_func:
+            show_text = f'\n{sj_text}{py_enter_name}.send({show_vars})'
+        else:
+            assert py_enter_name is None
+            new_vars= [f"{global_vars_name}['{x}']" for x in var_names]
+            names = ', '.join(new_vars)
+            show_text = f'\n{sj_text}{names} = {show_vars}'
+        return show_text
     def get_show_text(self):
         symbols = self.get_all_symbol()
         self.ptr_class_name = get_name('Ptr', symbols)
@@ -802,6 +1006,30 @@ cdef {self.show_func_ptr_name}(volatile const void* ptr):
 
         return text
 
+def get_enter_text(var_names, code_line:str, sj_len:int, start_lineno:int, end_lineno:int):
+    names_text = ', '.join(var_names)
+    code_content = code_line[sj_len:]
+    if end_lineno - start_lineno == 1:
+        text = f'{names_text} = yield None #{code_content}'
+
+    else:
+        text = f"{names_text} = yield None #'''{code_content}'''"
+    return text
+final_object = FinalCtype(object, None, None)
+def get_var_final_type(var_name:str, func:Func, model:Model) ->FinalCtype:
+    name=(var_name,)
+    if not func is None:
+        try:
+            t:Ctype = func.c_declare_vars[name]
+            final_t = model.all_appeared_type_final_type[t]
+            return final_t
+        except KeyError:
+            try:
+                t:Ctype = model.all_c_declare_vars[name]
+                final_t = model.all_appeared_type_final_type[t]
+                return final_t
+            except KeyError:
+                return final_object
 
 def get_class_name_from_tuple_name(tuple_name: tuple):
     text=''
@@ -1121,9 +1349,12 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             #
             r=cdef_func.match(code_line)
             if r:
-                lines[i] = (model, None, line)
                 log[i]=0
                 func=create_func(r, model.funcs)
+                if not func.nogil:
+                    lines[i] = (func, None, line)
+                else:
+                    lines[i] = (func, _nogil, line)
                 i=enter_func_block(code_lines, suojin_len, i+1, l, lines, func, model)
                 assert pre_i < i
                 pre_i, pre_enter = i, 0
@@ -1319,11 +1550,13 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
                 log[i] = 10
                 lines[i]=(cls, _cdef, line)
                 if public == 'readonly':
-                    i=enter_block(code_lines, suojin_len, cls.readonly_line_func, i+1,l, lines, cls, model)
+                    i=enter_block(code_lines, suojin_len, cls.readonly_line_func, i+1,l, lines, cls, model, log, 101)
                 elif public == 'public':
-                    i=enter_block(code_lines, suojin_len, cls.public_line_func, i+1,l, lines, cls, model)
-                else:
+                    i=enter_block(code_lines, suojin_len, cls.public_line_func, i+1,l, lines, cls, model, log, 102)
+                elif public =='private':
                     i=enter_block(code_lines, suojin_len, cls.private_line_func, i+1,l, lines, cls, model, log, 100)
+                else:
+                    i=i=enter_block(code_lines, suojin_len, cls.block_line_func, i+1,l, lines, cls, model, log, 100)
                 assert pre_i < i
                 pre_i, pre_enter=i, 0
                 continue
@@ -1331,8 +1564,11 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
             r=cdef_func.match(code_line)
             if r:
                 log[i] = 11
-                lines[i] = (cls, None, line)
-                func=create_func(r, cls.funcs)
+                func = create_func(r, cls.funcs)
+                if not func.nogil:
+                    lines[i] = (func, None, line)
+                else:
+                    lines[i] = (func, _nogil, line)
                 i=enter_func_block(code_lines, suojin_len, i+1, l, lines, func, model)
                 assert pre_i < i
                 pre_i, pre_enter = i, 1
@@ -1343,11 +1579,11 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
                 log[i] = 12
                 public, content = r.groups()
                 if public == 'readonly':
-                    attr_names = cls.readonly_line_func(code_line, model)
+                    attr_names = cls.readonly_line_func(content, model)
                 elif public == 'public':
-                    attr_names = cls.public_line_func(code_line, model)
+                    attr_names = cls.public_line_func(content, model)
                 else:
-                    attr_names = cls.private_line_func(code_line, model)
+                    attr_names = cls.private_line_func(content, model)
                 lines[i] = (cls, attr_names, line)
                 i += 1
                 assert pre_i < i
@@ -1404,7 +1640,8 @@ def new_var_line_or_nogil(code_line: str, c_declare_vars: dict, vars: dict ):
     #
     r = with_nogil.match(code_line)
     if r:
-        return _nogil
+        keyword = r.groups()[0]
+        return keyword
     #
     for keyword_re in (for_, with_, except_):
         r = keyword_re.match(code_line)
@@ -1906,7 +2143,7 @@ def test_debug_code(pyx_path:str, output_folder:str):
 
 if __name__ == '__main__':
     folder='D:/xrdb'
-    test_debug_code(r"D:\xrdb\debugger\test_other\cbhandles.pyx", 'D:/xrdb/debugger')
+    test_debug_code(r"D:\xrdb\graph.pyx", 'D:/xrdb/debugger')
     #test_debug_code('D:/xrdb/graph.pyx', 'D:/xrdb/debugger')
 
 
