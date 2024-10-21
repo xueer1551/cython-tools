@@ -696,7 +696,7 @@ class Model(M):
         text += f'\n{'#'*50}\n' + f'\n{'#'*50}\n'.join([model.get_no_cimport_text() for model in self.all_include_models])
         text += f'\n{'#'*50}\n'+self.get_no_cimport_text()
         return text
-    def get_model_dbg_code(self, model:Model, folder:str):
+    def get_model_dbg_code(self, model:Model, folder:str, dbg_file):
         symbols = self.get_all_symbol()
         dbg_model_name: str = get_name(model.name, symbols)
         #
@@ -707,7 +707,7 @@ class Model(M):
         py_enter_name: str = None
         pre_block = model
         lines: list = model.lines
-        dbg_lines = []
+        dbg_lines = [f'import {dbg_model_name}']
         gil_stack = [(_gil, '', 0)]
         cur_func, cur_func_sj_len = None, None
         cur_cls = None
@@ -836,15 +836,21 @@ class Model(M):
                 py_enter_lines.append('\n')
                 dbg_lines.append('\n')
         #
-        dbg_filename = os.path.join(folder, )
+        text = ''.join(dbg_lines)
+        dbg_file.write(text)
+        #
         enter_filename = os.path.join(folder, dbg_model_name, '.py')
         with open(enter_filename, 'w+', encoding='utf-8') as f:
-            f.writelines(py_enter_lines)
-        return
-    def rewrite_code_to_show(self):
-        symbols = self.all_symbol
+            text0 = ''.join(py_enter_lines)
+            f.write(text0)
+    def rewrite_code_to_show(self, folder: str):
+        dbg_filename = os.path.join(folder, self.name, '_dbg.pyx')
+        dbg_file=open(dbg_filename, 'w+', encoding='utf-8')
+        header_text = self.get_show_text()
+        dbg_file.write(header_text)
         for model in self.all_include_models:
-            self.get_model_dbg_code(model)
+            self.get_model_dbg_code(model, folder, dbg_file)
+        self.get_model_dbg_code(self, folder, dbg_file)
 
 
 
@@ -2140,6 +2146,14 @@ def test_debug_code(pyx_path:str, output_folder:str):
         f.write(model.get_all_text())
         f.write(f'\n{'#'*50}')
         f.write(text)
+
+def rewrite_code(pyx_path:str, output_folder:str):
+    folder, filename = os.path.split(pyx_path)
+    model: Model = enter_pyx(folder, filename)
+    model.get_all()
+    model.get_all_cimport_types({}, {})
+    model.get_all_final_type()
+    model.rewrite_code_to_show(output_folder)
 
 if __name__ == '__main__':
     folder='D:/xrdb'
