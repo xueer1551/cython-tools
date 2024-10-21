@@ -214,24 +214,6 @@ class CClass(M):
                 return self.private_line_func(line0, model)
     def get_all_symbol(self):
         return set(self.public_attrs.keys()).union(self.readonly_attrs.keys()).union(self.funcs.keys()).union(self.private_attrs.keys())
-    def get_rewrite_code_lines(self, lines:list, start_i:int, l:int, new_lines:list[str], model:Model):
-        for i in range(start_i, l):
-            line=new_lines[i]
-            if line:
-                block, flag, line_args=line
-                code_line, sj_len, start_lineno, end_lineno = line_args
-                if sj_len>0 :
-                    ii, min_sj_len = i, sj_len
-                    while(sj_len>0):
-                        new_lines.append(code_line)
-
-        ii, min_sj_len = i, sj_len
-        while(sj_len>0):
-
-        for i in range(start_i, l):
-            line=new_lines[i]
-            if line:
-                code_line, sj_len, start_lineno, end_lineno = line
 
 
 
