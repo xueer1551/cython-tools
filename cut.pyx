@@ -303,10 +303,13 @@ cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
                 break
             i+=1
     #把最后一个逗号到最后一个字符之间的文本给提取
+    #print(start, end, l)
     end=trace_find_no_kongbai(t,l-1,l)+1
-    if end!=l:
+    #print(start, end, l)
+    if start!=l:
         if start<end: #全都是空白
             s = sub_string_and_del_xiahuaxian_and_del_hh(text, start, end)
+            #print(s)
             ll.append(s)
     else:pass
     return ll
