@@ -414,6 +414,7 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
                     i+=1
                     line_text+=1
                     break
+            lte=line_text
             ll.append((PyUnicode_Substring(text, start, i), suojin, lts, lte))
             lts=lte
             start=i

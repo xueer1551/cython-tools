@@ -45,7 +45,7 @@ include=re.compile(r'\s*include\s*[\'"]{1,3}(?P<name>[^\'"]+)[\'"]{1,3}', re.DOT
 global_=re.compile(r'\s*global\s+(?P<name>[\w_]+)', re.DOTALL)
 for_=re.compile(r'\s*for\s+(?P<content>.+)?\s+(in|from)\s+', re.DOTALL)
 except_=re.compile(r'\s*except(?P<content>(?:\s+)[\w_]+)?((?:\s+as\s+)([\w_]+)\s*)?:', re.DOTALL)
-other_keywords=re.compile(r'\s*(?:if|elif|else|wihle|continue|try|raise|finally|match|case|return|await|pass|break)', re.DOTALL)
+other_keywords=re.compile(r'\s*(?:if|elif|else|while|continue|try|except|raise|finally|match|case|return|await|pass|break|assert|global)', re.DOTALL)
 need_keywords=re.compile(r'\s*(cdef|cpdef|ctypedef|def|with|for|from|cimport|include|async|global|class|except)\s', re.DOTALL)
 comment_block=re.compile(r'\s*(if|elif|else|while|try|finally|match|case|with|for|except).*?:', re.DOTALL)
 no_used=re.compile(r'(?:\s*[#@\'"\n])', re.DOTALL)
@@ -331,6 +331,8 @@ class FinalCtype(M):
     def __repr__(self):
         return f'{self.type}: FinalCtype'
     def get_call_show_text(self, var_name:str, model:Model):
+        '''if isinstance(self.type, tuple) and self.type[0]=='Py_buffer':
+            breakpoint()'''
         if self.type is object:
             return var_name
         else:
@@ -338,10 +340,10 @@ class FinalCtype(M):
                 if not self.type is FuncSignature: #不是函数指针
                     if isinstance(self.type, tuple):#内置类型指针
                         type_name=self.type[0]
+                        assert isinstance(type_name, str)
                         if not type_name=='void' and not type_name=='Py_buffer': #已知类型指针
                             show_base_type_func_name:str = model.show_func_names[self.type]
                         else: #void指针
-                            assert len(self.ptr_levels) > 1
                             show_base_type_func_name: str = model.show_no_define_type_func_name
                         base_type_name = ' '.join(self.type)
                         return f'{model.ptr_class_name}().set(&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}))'
@@ -352,7 +354,8 @@ class FinalCtype(M):
                             show_base_type_func_name:str = model.show_func_names[(base_type_name,)]
                             return f'{model.ptr_class_name}().set(&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}))'
                         else:
-                            show_base_type_func_name: str = model.fused_ptr_show_func_names[self.type]
+                            type_name = (self.type.name,)
+                            show_base_type_func_name: str = model.fused_ptr_show_func_names[type_name]
                             return f'{show_base_type_func_name}(&{var_name}, {self.ptr_levels})'
                         #
 
@@ -362,15 +365,25 @@ class FinalCtype(M):
                     else:
                         show_base_type_func_name:str = model.show_func_ptr_name
                         return f'{model.ptr_class_name}().set(&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof(void*))'
-            else:
-                if not self.type is FuncSignature:
-                    show_func_name = model.show_func_names[self.type]
-                    if not isinstance(self.type, Fused):
-                        return f'{show_func_name}(&{var_name})'
-                    else:
-                        return f'{show_func_name}({var_name})'
+            else: #是变量不是指针
+                if not self.type is FuncSignature: #
+                    if isinstance(self.type, tuple):  # 内置类型
+                        type_name = self.type[0]
+                        assert isinstance(type_name, str)
+                        if not type_name == 'void' and not type_name == 'Py_buffer':  # 已知类型指针
+                            show_func_name: str = model.show_func_names[self.type]
+                            return f'{show_func_name}(&{var_name})'
+                        else:  # void指针
+                            raise AssertionError
+                    else: #Struct or Union or Enum or Fused
+                        type_name = (self.type.name,)
+                        show_func_name = model.show_func_names[type_name]
+                        if not isinstance(self.type, Fused):
+                            return f'{show_func_name}(&{var_name})'
+                        else:
+                            return f'{show_func_name}(&{var_name})'
                 else: # 省略了*的函数指针
-                    return f'{model.show_func_ptr_name}({var_name})'
+                    return f'{model.show_func_ptr_name}(&{var_name})'
 
 PyObject=('PyObject',)
 class Model(M):
@@ -689,15 +702,16 @@ class Model(M):
         enter_symbols = set(model.all_funcs.keys()).union(model.classes.keys())
         gvn = get_name('global_vars', enter_symbols)
         global_vars_names = f'{dbg_model_name}.{gvn}'
-        enter_lines = [f'{gvn}=dict()\n']
+        enter_lines = [(f'{gvn}=dict()\n', '#')]
         #
         py_enter_name: str = None
         pre_block = model
         lines: list = model.lines
-        dbg_lines = [f'import {dbg_model_name}']
+        dbg_lines = [ ([ f'import {dbg_model_name}\n'],[] ) ]
+        pre_start_lineno=0
         gil_stack = [(_gil, '', 0)]
         gil_text = ''
-        enter_sj_text='  '
+        enter_sj_text='   '
         enter_func_prefix=''
         cur_func, cur_func_sj_len = None, None
         cur_cls = None
@@ -714,6 +728,7 @@ class Model(M):
                         pass
                     else:  # 这行是函数头
                         cur_func, cur_func_sj_len = block, sj_len
+                        func_head_code_line=code_line
                         # 找到下一行的缩进
                         offset = i + 1
                         assert offset<l
@@ -727,6 +742,8 @@ class Model(M):
                                     sj_kongbai = next_code_line[:next_sj_len]
                                     break
                                 else:
+                                    assert zhushi.match(next_code_line)
+                                    dbg_lines_append(dbg_lines, next_code_line, '', pre_start_lineno, start_lineno)
                                     offset +=1
                         # 查看是否是nogil函数
                         if block.nogil:
@@ -736,26 +753,28 @@ class Model(M):
                         sj_text = f'{sj_kongbai}{gil_text}'
                         #
                         py_enter_name = get_name(block.name, symbols)
-                        start_dbg_text = f'\n{sj_text}{py_enter_name} = {dbg_model_name}_{block.name}()\n{sj_text}next({py_enter_name})\n'
-                        dbg_lines.append(block.text)
-                        dbg_lines.append(start_dbg_text)
-                        var_names = block.args.keys()
-                        show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, model,
-                                                            global_vars_names)
-                        dbg_lines.append(show_text)
+                        start_dbg_text = f'\n{sj_text}{py_enter_name} = {dbg_model_name}.{enter_func_prefix}{block.name}()\n{sj_text}next({py_enter_name})\n'
                         #
-                        start_enter_text = f'\ndef {enter_func_prefix}{block.name}():\n{enter_sj_text}yield None'
+                        pre_start_lineno = dbg_lines_append(dbg_lines, func_head_code_line, start_dbg_text, pre_start_lineno, start_lineno)
+
+                        var_names = block.args.keys()
+                        show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, self,
+                                                            global_vars_names)
+                        dbg_lines_append(dbg_lines, '', show_text, pre_start_lineno, start_lineno)
+                        #
+                        est = enter_sj_text[:-2]
+                        start_enter_text = (f'\ndef {enter_func_prefix}{block.name}():\n{est}vars={{}}\n{est}while(True):\n{enter_sj_text}yield None', '#')
                         enter_lines.append(start_enter_text)
                         code_content = code_line.replace('\n', '')
-                        enter_text = f'\n{enter_sj_text}{", ".join(var_names)} = yield None# {code_content}\n'
+                        enter_text=get_enter_text(var_names,code_content, enter_sj_text, start_lineno, end_lineno )
                         enter_lines.append(enter_text)
                         #
-                        print('func',i, block, start_enter_text, enter_text,'\n--------')
+                        print('func',i, block, code_line, start_enter_text, enter_text,'\n--------')
                         i = offset
                         continue
                 elif isinstance(block, Model):
                     if cur_cls:  # 刚出class块
-                        enter_sj_text='  '
+                        enter_sj_text='    '
                         enter_func_prefix=''
                         assert cls_min_sj_text
                         cls_symbols = cur_cls.get_all_symbol()
@@ -763,35 +782,49 @@ class Model(M):
                             show_func_name = get_name(f'show_{private_attr_name}', cls_symbols)
                             final_t: FinalCtype = self.all_appeared_type_final_type[private_attr_ctype]
                             show_text = final_t.get_call_show_text(f'self.{private_attr_name}', self)
-                            method_text = f'{cls_min_sj_text}cdef {show_func_name}(self):  return {show_text}\n'
-                            dbg_lines.append(method_text)
+                            method_text = f'{cls_min_sj_text}def {show_func_name}(self):  return {show_text}\n'
+                            #
+                            pre_start_lineno = dbg_lines_append(dbg_lines, method_text, '', pre_start_lineno,
+                                                                start_lineno)
+
+
                         cls_min_sj_text = None
                         cur_cls = None
                     if cur_func: #刚出func块
-                        enter_lines.append(f'{enter_sj_text}return None\n')
+                        #enter_lines.append((f'{enter_sj_text[:]}return None\n','#'))
                         cur_func, py_enter_name = None, None
                 elif isinstance(block, CClass):
                     if cur_cls is block: #不是首行
                         pass
                     else: #首行
-                        enter_sj_text='    '
-                        enter_func_prefix=f'{block.name}_'
-                        if zhushi.match(code_line):
-                            i+=1
-                            while (i<l):
-                                line = lines[i]
-                                if line:
-                                    the_block, flag, code_lines = line
-                                    sj_len = code_lines[1]
-                                    assert sj_len >0
+                        pre_start_lineno=dbg_lines_append(dbg_lines, code_line, '', pre_start_lineno, start_lineno)
+                        #enter_lines.append((f'\n{code_line}','#'))
+                        cur_cls, next_code_line = block, None
+                        offset=i+1
+                        assert sj_len==0
+                        while(offset<l):
+                            line = lines[offset]
+                            if line:
+                                block, flag, code_lines = line
+                                next_code_line, sj_len, start_lineno, end_lineno = code_lines
+                                if sj_len>0:
                                     break
                                 else:
-                                    i+=1
+                                    assert zhushi.match(next_code_line)
+                                    dbg_lines_append(dbg_lines, next_code_line, '', pre_start_lineno, start_lineno)
+                                    offset +=1
+                            else:
+                                offset += 1
+                        i=offset
+                        enter_sj_text='      '
+                        enter_func_prefix=f'{block.name}_'
                         print('class first', i, sj_len,code_line,'\n--------')
-                        cur_cls, cls_min_sj_text = block, code_line[:sj_len]
+                        cls_min_sj_text = next_code_line[:sj_len]
+                        continue
                 else:
                     pass
                 pre_block = block
+                assert cur_cls is None or isinstance(cur_cls, CClass)
                 # 查询并更新当前gil状态
                 if not gil_stack:
                     pass
@@ -803,18 +836,30 @@ class Model(M):
                         else:
                             continue
                     gil_stack.append((gil_stat, gil_text, gil_sj_len))
+                if start_lineno>pre_start_lineno:
+                    pass
+                elif start_lineno==pre_start_lineno:
+                    if sj_len==0:
+                        pass
+                    else:
+                        print('同行')
+                        print(lines[i])
+                        print(lines[i - 1])
+                        assert zhushi.match(code_line)
+                else:
+                    raise AssertionError
                 # 生成暴露给python空间的代码
                 if isinstance(flag, list):
+                    var_names = flag
+                    sj_text = code_line[:sj_len]
                     if cur_func:
-                        var_names = flag
-                        show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, model,
+                        show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, self,
                                                             global_vars_names)
-                        dbg_lines.append(code_line)
-                        dbg_lines.append(show_text)
+                        pre_start_lineno = dbg_lines_append(dbg_lines, code_line, show_text, pre_start_lineno, start_lineno)
                         #
                         enter_text = get_enter_text(var_names, code_line, enter_sj_text, start_lineno, end_lineno)
                         enter_lines.append(enter_text)
-                        print('show vars', block, show_text, enter_text, start_lineno, end_lineno, '\n--------')
+                        print('show vars', i, block, code_line, show_text, enter_text, start_lineno, end_lineno, '\n--------')
                     else:
                         assert isinstance(block, Model)
                     i+=1
@@ -836,13 +881,14 @@ class Model(M):
                                         var_names = flag
                                         new_line = f'{sj_kongbai_text}cdef {code_line[sj_len:]}'
                                         sj_text = f'{sj_kongbai_text}{gil_text}'
-                                        show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, model,
+                                        show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, self,
                                                                             global_vars_names)
-                                        dbg_lines.append(new_line)
-                                        dbg_lines.append(show_text)
+                                        pre_start_lineno = dbg_lines_append(dbg_lines, new_line, show_text, pre_start_lineno,
+                                                                            start_lineno)
                                         #
                                         enter_text = get_enter_text(var_names, new_line, enter_sj_text, start_lineno, end_lineno)
                                         enter_lines.append(enter_text)
+                                        print('cdef while', i, code_line, enter_text, start_lineno, end_lineno, '\n--------')
                                     i += 1
                                 else:
                                     break
@@ -856,14 +902,24 @@ class Model(M):
                         continue
                 elif isinstance(flag, tuple):
                     pre_sj_len=sj_len
+                    pre_code_line=code_line
+                    pre_start_lineno = dbg_lines_append(dbg_lines, pre_code_line, '', pre_start_lineno,
+                                                        start_lineno)
+                    i += 1
                     while (i < l):
                         line = lines[i]
                         if line:
                             block, _, code_lines = lines[i]
-                            code_line, sj_len, start_lineno, end_lineno = code_lines
+                            code_line, sj_len, next_start_lineno, next_end_lineno = code_lines
                             if sj_len > pre_sj_len:
                                 break
                             else:
+                                assert zhushi.match(code_line)
+                                assert next_start_lineno == start_lineno
+                                ll=dbg_lines[-1]
+                                ll[0].append(code_line)
+                                print('zhushi,1', code_line)
+                                #pre_start_lineno=next_start_lineno
                                 i+=1
                         else:
                             i += 1
@@ -873,46 +929,69 @@ class Model(M):
                     var_names = flag[0]
                     if var_names:
                         #
-                        show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, model,
+                        show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, self,
                                                             global_vars_names)
-                        dbg_lines.append(show_text)
-                        #
-                        enter_text = get_enter_text(var_names, code_line, enter_sj_text, start_lineno, end_lineno)
-                        enter_lines.append(enter_text)
+                    else:
+                        show_text=''
+                    print('for_except_with', i, pre_code_line, show_text, start_lineno, end_lineno, '\n--------')
+                    pre_start_lineno=dbg_lines_append(dbg_lines, '', show_text, pre_start_lineno, start_lineno)
+                    #
+                    enter_text = get_enter_text(var_names, code_line, enter_sj_text, start_lineno, end_lineno)
+                    enter_lines.append(enter_text)
+
+                    continue
                 elif flag == _nogil:
                     nogil_text = 'with gil: '
                     gil_stack.append((_nogil, nogil_text, sj_len))
-                    dbg_lines.append(code_line)
+                    pre_start_lineno = dbg_lines_append(dbg_lines, code_line, '', pre_start_lineno, start_lineno )
+                    enter_lines.append(('\n', f'# {code_line}'))
                     print(_gil, i)
                     i += 1
                     continue
                 elif flag == _gil:
                     assert len(gil_stack)==1 or gil_stat == _nogil
                     gil_stack.append((_gil, '', sj_len))
-                    dbg_lines.append(code_line)
+                    pre_start_lineno = dbg_lines_append(dbg_lines, code_line, '', pre_start_lineno, start_lineno)
+                    enter_lines.append(('\n', f'# {code_line}'))
                     print(_nogil, i)
                     i += 1
                     continue
                 else:
-                    dbg_lines.append(code_line)
-                    print('other', i, code_line)
+                    pre_start_lineno = dbg_lines_append(dbg_lines, code_line, '', pre_start_lineno, start_lineno)
+                    enter_lines.append(('', f'# {code_line}'))
+                    print('other', i, code_line, start_lineno, end_lineno)
                     i += 1
                     continue
             else:
-                enter_lines.append('\n')
-                dbg_lines.append('\n')
+                #enter_lines.append(('\n', '#'))
+                pre_start_lineno = dbg_lines_append(dbg_lines, '\n', '', pre_start_lineno, start_lineno )
                 print('not line', i)
                 i += 1
                 continue
 
         #
-        text = ''.join(dbg_lines)
+        l=[]
+        for lines0, lines1 in dbg_lines:
+            text01 = f'{''.join(lines0)}{''.join(lines1)}'
+            l.append(text01)
+        l.append('\n')
+        text = ''.join(l)
         dbg_file.write(text)
         #
         enter_filename = os.path.join(folder, dbg_model_name+'.py')
+        max_enter_line = max(enter_lines, key=lambda x: len(x[0]))
+        max_enter_line_len = len(max_enter_line[0])
+        new_enter_lines=[]
+        for enter_line, zhushi_text in enter_lines:
+            konge = ' '*(max_enter_line_len-len(enter_line) )
+            text = f'{enter_line}{konge}{zhushi_text}'
+            new_enter_lines.append(text)
+        #
         with open(enter_filename, 'w+', encoding='utf-8') as f:
-            text0 = ''.join(enter_lines)
+            text0 = ''.join(new_enter_lines)
             f.write(text0)
+        #
+
     def rewrite_code_to_show(self, folder: str):
         dbg_filename = os.path.join(folder, self.name+'_dbg.pyx')
         dbg_file=open(dbg_filename, 'w+', encoding='utf-8')
@@ -922,19 +1001,25 @@ class Model(M):
             self.get_model_dbg_code(model, folder, dbg_file)
         self.get_model_dbg_code(self, folder, dbg_file)
 
-    def get_show_vars_text(self, var_names: list[str], sj_text:str, py_enter_name: str, cur_func:Func, model:Model, global_vars_name:str ):
+    def get_show_vars_text(self, var_names: list[str], sj_text:str, py_enter_name: str, cur_func:Func, model:Model, global_vars_name:str, print_model_name:str,start_lineno:int, print_flag:bool=False,  ):
         fts = []
         for var_name in var_names:
             final_t: FinalCtype = get_var_final_type(var_name, cur_func, model)
-            fts.append(final_t.get_call_show_text(var_name, self))
+            tx = final_t.get_call_show_text(var_name, self)
+            fts.append(tx)
         show_vars = ', '.join(fts)
         if cur_func:
-            show_text = f'{sj_text}{py_enter_name}.send({show_vars})\n'
+            new_vars = [f"('{x[0]}',{x[1]})" for x in zip(var_names, fts)]
+            tt = '[' + ', '.join(new_vars) + ']'
+            show_text = f'{sj_text}{py_enter_name}.send({tt})\n'
         else:
             assert py_enter_name is None
             new_vars= [f"{global_vars_name}['{x}']" for x in var_names]
             names = ', '.join(new_vars)
             show_text = f'{sj_text}{names} = {show_vars}\n'
+        if print_flag:
+            print_text = ', '.join(fts)
+            show_text += f'{sj_text}print("{print_model_name}\'s line {start_lineno}": {print_text})\n'
         return show_text
     def get_show_text(self):
         symbols = self.get_all_symbol()
@@ -1034,7 +1119,7 @@ cdef class {self.ptr_class_name}:
                         tt = get_fused_show_text(type_name, func_name, parts, self)
                         ttt = call_fused_choose_base_type_show_func(type_name, ptr_func_name, parts, self)
                         text += tt+ttt
-                        fused_ptr_show_func_names[type_name] = ptr_func_name
+                        fused_ptr_show_func_names[(type_name,)] = ptr_func_name
                     elif isinstance(t, Enum):
                         type_name = t.name
                         func_name = show_func_names[(type_name,)]
@@ -1081,17 +1166,29 @@ cdef {self.show_func_ptr_name}(volatile const void* ptr):
         return text
 
 
+def dbg_lines_append(dbg_lines, dbg_line: str, show_line: str, pre_start_lineno: int, start_lineno: int):
+    #
+    if start_lineno > pre_start_lineno:
+        dbg_lines.append(([dbg_line], [show_line]))
+    else:
+        dbg_show_line = dbg_lines[-1]
+        dbg_show_line[0].append(dbg_line)
+        dbg_show_line[1].append(show_line)
+    return start_lineno
+
 def get_enter_text(var_names, code_line:str, enter_sj_text, start_lineno:int, end_lineno:int):
-    names_text = ', '.join(var_names)
-    code_content = code_line.lstrip()
-    zhushi= code_content.replace('\n','')
-    text = f'{enter_sj_text}{names_text} = yield None #{zhushi}\n'
+    #names_text = ', '.join(var_names)
+    #code_content = code_line.lstrip()
+    #zhushi= code_content.replace('\n','')
+    #text = (f'{enter_sj_text}{names_text} = yield None',f'#{code_line}')
+    text=(f'\n{enter_sj_text}vs=yield None; vars.update(vs)',f'#{code_line}')
     return text
 
 
 final_object = FinalCtype(object, None, None)
 def get_var_final_type(var_name:str, func:Func, model:Model) ->FinalCtype:
-    name=(var_name,)
+    assert isinstance(var_name, str)
+    name=var_name
     if not func is None: #函数体内
         try: #现在函数内查找名称
             t:Ctype = func.c_declare_vars[name]
@@ -1413,10 +1510,10 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             r = cdef_class.match(code_line)
             if r:
                 _, type, name, __ = r.groups()
-                lines[i]=(model, None, line)
                 log[i]=1
                 name=name.strip()
                 cls=CClass(name, type)
+                lines[i]=(cls, None, line)
                 model.classes[(name,)]=cls
                 i=enter_class_block(code_lines, suojin_len, i+1, l, lines, cls, model, start_lineno, end_lineno, log)
                 assert pre_i < i
@@ -1660,7 +1757,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
             #
             r=cdef_block.match(code_line)
             if r:
-                public=r.groups()[0]
+                public=r.groupdict()['public']
                 log[i] = 10
                 lines[i]=(cls, None, line)
                 if public == 'readonly':
