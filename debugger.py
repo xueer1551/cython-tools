@@ -4,8 +4,9 @@ import time
 
 import pyximport
 pyximport.install(language_level=3)
+import cut
 import cut_dbg as cut
-#import cut
+
 import warnings, copy
 
 # 忽略所有的 SyntaxWarning 警告
@@ -344,20 +345,26 @@ class FinalCtype(M):
                         assert isinstance(type_name, str)
                         if not type_name=='void' and not type_name=='Py_buffer': #已知类型指针
                             show_base_type_func_name:str = model.show_func_names[self.type]
+                            base_type_name = ' '.join(self.type)
+                            return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}))'
                         else: #void指针
                             show_base_type_func_name: str = model.show_no_define_type_func_name
-                        base_type_name = ' '.join(self.type)
-                        return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}))'
+                            return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof(void*))'
                     else: #Struct or Union or Enum or Fused
                         if not isinstance(self.type , Fused):
                             base_type_name = self.type.name
                             assert isinstance(base_type_name, str)
-                            show_base_type_func_name:str = model.show_func_names[(base_type_name,)]
-                            return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}))'
-                        else:
+                            if self.type.defined:
+                                show_base_type_func_name: str = model.show_func_names[(base_type_name,)]
+                                return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}))'
+                            else:
+                                show_base_type_func_name: str = model.show_no_define_type_func_name
+                                return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{model.show_no_define_type_func_name}, sizeof(void*))'
+                        else: # fused指针
                             type_name = (self.type.name,)
                             show_base_type_func_name: str = model.fused_ptr_show_func_names[type_name]
-                            return f'{show_base_type_func_name}(&{var_name}, {self.ptr_levels})'
+                            end_item = '[0]'*len(self.ptr_levels)
+                            return f'{show_base_type_func_name}(<volatile void**>&{var_name}, {self.ptr_levels}, {var_name}{end_item})'
                         #
 
                 else: #函数指针
@@ -381,8 +388,8 @@ class FinalCtype(M):
                         show_func_name = model.show_func_names[type_name]
                         if not isinstance(self.type, Fused):
                             return f'{show_func_name}(<volatile const void*>&{var_name})'
-                        else:
-                            return f'{show_func_name}(<volatile const void*>&{var_name})'
+                        else: #fused 变量
+                            return f'{show_func_name}(&{var_name}, {var_name})'
                 else: # 省略了*的函数指针
                     return f'{model.show_func_ptr_name}(<volatile const void*>&{var_name})'
 
@@ -764,13 +771,13 @@ class Model(M):
                         dbg_lines_append(dbg_lines, '', show_text, pre_start_lineno, start_lineno)
                         #
                         est = enter_sj_text[:-2]
-                        start_enter_text = (f'\ndef {enter_func_prefix}{block.name}():\n{est}vars={{}}\n{est}while(True):\n{enter_sj_text}yield None', '#')
+                        start_enter_text = (f'\ndef {enter_func_prefix}{block.name}():\n{est}vars={{}};yield None\n{est}while(True):\n{enter_sj_text}','')
                         enter_lines.append(start_enter_text)
                         code_content = code_line.replace('\n', '')
                         enter_text=get_enter_text(var_names,code_content, enter_sj_text, start_lineno, end_lineno )
                         enter_lines.append(enter_text)
                         #
-                        pass#print('func',i, block, code_line, start_enter_text, enter_text,'\n--------')
+                        print('func',i, block, code_line, start_enter_text, enter_text,'\n--------')
                         i = offset
                         continue
                 elif isinstance(block, Model):
@@ -792,7 +799,7 @@ class Model(M):
                         cls_min_sj_text = None
                         cur_cls = None
                     if cur_func: #刚出func块
-                        #enter_lines.append((f'{enter_sj_text[:]}return None\n','#'))
+                        #enter_lines.append((f'{enter_sj_text[:-2]}return None\n','#'))
                         cur_func, py_enter_name = None, None
                 elif isinstance(block, CClass):
                     if cur_cls is block: #不是首行
@@ -819,7 +826,7 @@ class Model(M):
                         i=offset
                         enter_sj_text='      '
                         enter_func_prefix=f'{block.name}_'
-                        pass#print('class first', i, sj_len,code_line,'\n--------')
+                        print('class first', i, sj_len,code_line,'\n--------')
                         cls_min_sj_text = next_code_line[:sj_len]
                         continue
                 else:
@@ -843,9 +850,9 @@ class Model(M):
                     if sj_len==0:
                         pass
                     else:
-                        pass#print('同行')
-                        pass#print(lines[i])
-                        pass#print(lines[i - 1])
+                        print('同行')
+                        print(lines[i])
+                        print(lines[i - 1])
                         assert zhushi.match(code_line)
                 else:
                     raise AssertionError
@@ -853,16 +860,19 @@ class Model(M):
                 if isinstance(flag, list):
                     var_names = flag
                     sj_text = f'{code_line[:sj_len]}{gil_text}'
+                    assert cur_func or isinstance(block, Model)
+
+                    show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, self,
+                                                        global_vars_names, print_model_name, start_lineno, print_flag)
+                    pre_start_lineno = dbg_lines_append(dbg_lines, code_line, show_text, pre_start_lineno, start_lineno)
+                    #
                     if cur_func:
-                        show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, self,
-                                                            global_vars_names, print_model_name, start_lineno, print_flag)
-                        pre_start_lineno = dbg_lines_append(dbg_lines, code_line, show_text, pre_start_lineno, start_lineno)
-                        #
                         enter_text = get_enter_text(var_names, code_line, enter_sj_text, start_lineno, end_lineno)
                         enter_lines.append(enter_text)
-                        pass#print('show vars', i, block, code_line, show_text, enter_text, start_lineno, end_lineno, '\n--------')
+                        print('show vars', i, block, code_line, show_text, enter_text, start_lineno, end_lineno, '\n--------')
                     else:
-                        assert isinstance(block, Model)
+                        print('show vars', i, block, code_line, show_text, 'no enter_text', start_lineno, end_lineno,
+                              '\n--------')
                     i+=1
                     continue
                 elif flag == _cdef:  # cdef: 块 要改写成一个个cdef ……行
@@ -889,16 +899,16 @@ class Model(M):
                                         #
                                         enter_text = get_enter_text(var_names, new_line, enter_sj_text, start_lineno, end_lineno)
                                         enter_lines.append(enter_text)
-                                        pass#print('cdef while', i, code_line, enter_text, start_lineno, end_lineno, '\n--------')
+                                        print('cdef while', i, code_line, enter_text, start_lineno, end_lineno, '\n--------')
                                     i += 1
                                 else:
                                     break
-                                pass#print('cdef', i, block, enter_text,'\n--------')
+                                print('cdef', i, block, enter_text,'\n--------')
                             else:
                                 break
                     else:
                         assert isinstance(block, CClass)
-                        pass#print('class cdef', i)
+                        print('class cdef', i)
                         i+=1
                         continue
                 elif isinstance(flag, tuple):
@@ -919,7 +929,7 @@ class Model(M):
                                 assert next_start_lineno == start_lineno
                                 ll=dbg_lines[-1]
                                 ll[0].append(code_line)
-                                pass#print('zhushi,1', code_line)
+                                print('zhushi,1', code_line)
                                 #pre_start_lineno=next_start_lineno
                                 i+=1
                         else:
@@ -934,7 +944,7 @@ class Model(M):
                                                             global_vars_names, print_model_name, start_lineno, print_flag)
                     else:
                         show_text=''
-                    pass#print('for_except_with', i, pre_code_line, show_text, start_lineno, end_lineno, '\n--------')
+                    print('for_except_with', i, pre_code_line, show_text, start_lineno, end_lineno, '\n--------')
                     pre_start_lineno=dbg_lines_append(dbg_lines, '', show_text, pre_start_lineno, start_lineno)
                     #
                     enter_text = get_enter_text(var_names, code_line, enter_sj_text, start_lineno, end_lineno)
@@ -946,7 +956,7 @@ class Model(M):
                     gil_stack.append((_nogil, nogil_text, sj_len))
                     pre_start_lineno = dbg_lines_append(dbg_lines, code_line, '', pre_start_lineno, start_lineno )
                     enter_lines.append(('\n', f'# {code_line}'))
-                    pass#print(_nogil, i)
+                    print(_nogil, i)
                     i += 1
                     continue
                 elif flag == _gil:
@@ -954,19 +964,19 @@ class Model(M):
                     gil_stack.append((_gil, '', sj_len))
                     pre_start_lineno = dbg_lines_append(dbg_lines, code_line, '', pre_start_lineno, start_lineno)
                     enter_lines.append(('\n', f'# {code_line}'))
-                    pass#print(_gil, i)
+                    print(_gil, i)
                     i += 1
                     continue
                 else:
                     pre_start_lineno = dbg_lines_append(dbg_lines, code_line, '', pre_start_lineno, start_lineno)
                     enter_lines.append(('', f'# {code_line}'))
-                    pass#print('other', i, code_line, start_lineno, end_lineno)
+                    print('other', i, code_line, start_lineno, end_lineno)
                     i += 1
                     continue
             else:
                 #enter_lines.append(('\n', '#'))
                 pre_start_lineno = dbg_lines_append(dbg_lines, '\n', '', pre_start_lineno, start_lineno )
-                pass#print('not line', i)
+                print('not line', i)
                 i += 1
                 continue
 
@@ -1094,55 +1104,61 @@ cdef class {self.ptr_class_name}:
         final_t: FinalCtype =None
         s=set([Struct, Union, Enum, Fused])
         fina_ts = list(self.all_appeared_type_final_type.values())
-        for final_t in fina_ts:
-            t = final_t.type
-            tt=type(t)
-            if tt in s:
-                if t.defined:
-                    type_name = (t.name,)
-                    func_name = get_name(f'show_{t.name}', symbols)
-                    show_func_names[type_name] = func_name
-                else: #未定义的struct
-                    type_name = (t.name,)
-                    show_func_names[type_name] = self.show_no_define_type_func_name
-                pass
-        #
         showed =set()
         for final_t in fina_ts:
-            t = final_t.type
-            tp = type(t)
-            if tp in s :
+            t: Struct|Union|Enum|Fused = final_t.type
+            tt=type(t)
+            if tt in s:
+                tp=t.name
                 if tp not in showed:
-                    if isinstance(t, Fused):
-                        type_name = t.name
-                        func_name =show_func_names[(type_name,)]
-                        parts = t.define_struct_union_enum_fuseds
-                        ptr_func_name = get_name(f'show_{type_name}_ptr', symbols)
-                        tt = get_fused_show_text(type_name, func_name, parts, self)
-                        ttt = call_fused_choose_base_type_show_func(type_name, ptr_func_name, parts, self)
-                        text += tt+ttt
-                        fused_ptr_show_func_names[(type_name,)] = ptr_func_name
-                    elif isinstance(t, Enum):
-                        type_name = t.name
-                        func_name = show_func_names[(type_name,)]
-                        class_name = get_name(type_name.title(), symbols)
-                        parts = t.vars
-                        tt=get_enum_show_text(class_name, type_name, func_name, parts)
-                        text += tt
-                    elif isinstance(t,Struct) or isinstance(t, Union): # Struct or Union
-                        type_name = t.name
-                        func_name = show_func_names[(type_name,)]
-                        class_name = get_name(type_name, symbols)
-                        parts = t.var_mapping_type.items()
-                        if parts:
-                            tt=get_struct_or_union_show_text(class_name, type_name, func_name, parts, self.all_appeared_type_final_type, self)
-                            text += tt
-                        else:
-                            assert final_t.ptr_levels
+                    if t.defined:
+                        type_name = (tp,)
+                        func_name = get_name(f'show_{t.name}', symbols)
+                        show_func_names[type_name] = func_name
+                    else: #未定义的struct
+                        type_name = (t.name,)
+                        show_func_names[type_name] = self.show_no_define_type_func_name
                     showed.add(tp)
-                    #show_func_names[type_name] = func_name
+        #
+        showed_class={}
+        for final_t in fina_ts:
+            t = final_t.type
+            tt = type(t)
+            if tt in s :
+                tp = t.name
+                if tp in showed_class.keys() :
+                    class_name = showed_class[tp]
                 else:
-                    continue
+                    class_name = get_name(tp, symbols)
+                    showed_class[tp] = class_name
+                if isinstance(t, Fused):
+                    type_name = t.name
+                    func_name =show_func_names[(type_name,)]
+                    parts = t.define_struct_union_enum_fuseds
+                    ptr_func_name = get_name(f'show_{type_name}_ptr', symbols)
+                    tt = get_fused_show_text(type_name, func_name, parts, self)
+                    ttt = call_fused_choose_base_type_show_func(type_name, ptr_func_name, parts, self)
+                    text += tt+ttt
+                    fused_ptr_show_func_names[(type_name,)] = ptr_func_name
+                elif isinstance(t, Enum):
+                    type_name = t.name
+                    func_name = show_func_names[(type_name,)]
+                    #class_name = get_name(type_name.title(), symbols)
+                    parts = t.vars
+                    tt=get_enum_show_text(class_name, type_name, func_name, parts)
+                    text += tt
+                elif isinstance(t,Struct) or isinstance(t, Union): # Struct or Union
+                    type_name = t.name
+                    func_name = show_func_names[(type_name,)]
+                    #class_name = get_name(type_name, symbols)
+                    parts = t.var_mapping_type.items()
+                    if parts:
+                        tt=get_struct_or_union_show_text(class_name, type_name, func_name, parts, self.all_appeared_type_final_type, self)
+                        text += tt
+                    else:
+                        assert final_t.ptr_levels
+            else:
+                continue
             #
         #
         self.fused_ptr_show_func_names=fused_ptr_show_func_names
@@ -1340,7 +1356,7 @@ def get_fused_show_text(type_name:str, func_name:str, parts, model):
     text, d_words=get_fused_ctypedef_one_word(parts, model.all_symbol)
     text+=f'''
     
-cdef {func_name}(volatile const {type_name}* ptr):'''
+cdef {func_name}(volatile const {type_name}* ptr, {type_name} _):'''
     for part in parts:
         try:
             one_word = d_words[part]
@@ -1355,7 +1371,7 @@ def call_fused_choose_base_type_show_func( type_name:str, func_name:str, parts, 
     text, d_words = get_fused_ctypedef_one_word(parts, model.all_symbol)
     text += f'''
     
-cdef {func_name}(volatile const {type_name}* ptr, ptr_levels):'''
+cdef {func_name}(volatile const void** ptr, ptr_levels, {type_name} _):'''
     for part in parts:
         try:
             one_word = d_words[part]
@@ -1364,7 +1380,7 @@ cdef {func_name}(volatile const {type_name}* ptr, ptr_levels):'''
         final_t :FinalCtype=model.all_appeared_type_final_type[part]#show变量指针
         show_base_type_func_name = model.show_func_names[final_t.type]
         # cdef set(self, volatile const void** ptr, list ptr_levels, show_func* func, unsigned int itemsize )
-        text += f'\n    if {type_name}=={one_word}: return {model.ptr_class_name}().set(<volatile const void**>&ptr, ptr_levels, &{show_base_type_func_name}, sizeof({one_word}))'
+        text += f'\n    if {type_name}=={one_word}: return {model.ptr_class_name}().set(ptr, ptr_levels, &{show_base_type_func_name}, sizeof(ptr))'
     text += '\n    raise AssertionError'
     return text
 #-----------------------------------------------------------------------------------------------------------------------
@@ -1483,7 +1499,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
     t0=time.time()
     pre_i, pre_enter = 0, None
     while (i<l):
-        #pass#print(i)
+        #print(i)
         line = code_lines[i]
         code_line, suojin_len, start_lineno, end_lineno = line
         if suojin_len==0:
@@ -1671,7 +1687,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             if not code_line or all_kongbai.fullmatch(code_line):
                 pass
             else:
-                pass#print(f'该行认为无需处理， 物理行开始和结束[{start_lineno},{end_lineno}), 内容：{code_line}，逻辑行号:{i}' )
+                print(f'该行认为无需处理， 物理行开始和结束[{start_lineno},{end_lineno}), 内容：{code_line}，逻辑行号:{i}' )
             i+=1
         else:
             if not check_code_line_have_content(code_line):
@@ -1700,7 +1716,7 @@ def enter_func_block( code_lines: iter, sj_len: int, start_i: int, l: int, lines
     t0 = time.time()
     while(i<l):
         line=code_lines[i]
-        #pass#print(i, line)
+        #print(i, line)
         code_line, suojin_len, _, __ = line
         if suojin_len>sj_len:
             t1 = time.time()
@@ -1750,7 +1766,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
     t0 = time.time()
     pre_i, pre_enter=0, None
     while (i < l):
-        #pass#print(i)
+        #print(i)
         line = code_lines[i]
         code_line, suojin_len, start_lineno, end_lineno = line
         t1 = time.time()
@@ -1913,7 +1929,7 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
     i=start_i
     t0 = time.time()
     while(i<l):
-        #pass#print(i)
+        #print(i)
         t1 = time.time()
         if t1 - t0 > timeout: raise TimeoutError
         line=code_lines[i]
@@ -2046,7 +2062,7 @@ def get_cdef_func_signature(rr: re.Match, parent_vars_symbol_table: dict, self_v
 def get_func(modifier_text, type_and_name_text, args_text, suffix_text, parent_vars_symbol_table: dict, self_vars_symbol_table: dict):
     modifier = tuple(sorted(words_.findall(modifier_text))) if modifier_text else tuple()
     return_type, func_name = get_func_return_type_and_name(type_and_name_text, modifier)
-    #pass#print(modifier_text, type_and_name_text, args_text, suffix_text)
+    #print(modifier_text, type_and_name_text, args_text, suffix_text)
     args_text_ = cut.cut_douhao_and_strip(args_text)
     t = FuncSignature(func_name, return_type, args_text, suffix_text)
     parent_vars_symbol_table[func_name]=t
@@ -2058,7 +2074,7 @@ def get_func(modifier_text, type_and_name_text, args_text, suffix_text, parent_v
 strip_type_zhushi=re.compile('')
 _none, _not ='None', 'not'
 def get_cdef_func_args(args_text: str, symbol_table:dict): #注意ctypedef的不能用这个
-    #pass#print(args_text, '////')
+    #print(args_text, '////')
     type_and_names=cut.cut_douhao_and_strip(args_text)
     for type_and_name_text in type_and_names:
         r=left_value_fuzhi_express.match(type_and_name_text)
@@ -2095,7 +2111,8 @@ def decode_cdef_line(line: str, symbol_table: dict) ->list[str]:
     left, right = declare_var.search(first_text).groups()
     first_var_type, first_var_name, shared_type = get_type_and_name(left)
     symbol_table[first_var_name] = first_var_type
-    var_names.append(first_var_name)
+    if right:
+        var_names.append(first_var_name)
     if (type(shared_type) is Ctype and not shared_type.memoryview):
         for i in range(1, l):
             text = vars[i]
@@ -2129,7 +2146,8 @@ def decode_cdef_line(line: str, symbol_table: dict) ->list[str]:
             ptr_level=get_ptr_level(xinghao_count, fangkuohao, stat)
             t = shared_type + ptr_level
             symbol_table[name] = t
-            var_names.append(name)
+            if right:
+                var_names.append(name)
         return var_names
     else: #memoryview 或者 cppclass
         for i in range(1, l):
@@ -2139,7 +2157,8 @@ def decode_cdef_line(line: str, symbol_table: dict) ->list[str]:
             assert len(names)==1
             name=names[0]
             symbol_table[name] = first_var_type
-            var_names.append(name)
+            if right:
+                var_names.append(name)
         return var_names
 
 def get_cdef_line(rr: re.Match, symbol_table: dict):
@@ -2397,8 +2416,8 @@ def rewrite_code(pyx_path:str, output_folder:str, print_flag=False):
 
 if __name__ == '__main__':
     folder='D:/xrdb'
-    rewrite_code(r"D:\cython-tools\cut.pyx", 'D:/cython-tools', True)
-    #test_debug_code('D:/xrdb/graph.pyx', 'D:/xrdb/debugger')
+    #rewrite_code(r"D:\cython-tools\cut.pyx", 'D:/cython-tools', False)
+    rewrite_code('D:/xrdb/graph.pyx', 'D:/xrdb/debugger')
 
 
 

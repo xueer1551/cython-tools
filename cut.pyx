@@ -12,7 +12,7 @@ ctypedef unsigned int uint
 def cut_line(unicode text) ->list[tuple[str, int, int, int]]:
     cdef :
         uint k=PyUnicode_KIND (text)
-        pyucs t
+
     if k==2:
         return _cut_line(text, PyUnicode_2BYTE_DATA(text), len(text))
     elif k==1:
@@ -23,7 +23,7 @@ def cut_line(unicode text) ->list[tuple[str, int, int, int]]:
 def cut_douhao_and_strip(unicode text) ->list[str]:
     cdef:
         uint k = PyUnicode_KIND(text)
-        pyucs t
+
     if k == 2:
         return _cut_douhao_and_strip(text, PyUnicode_2BYTE_DATA(text), len(text))
     elif k == 1:
@@ -34,7 +34,7 @@ def cut_douhao_and_strip(unicode text) ->list[str]:
 def split_by_fangkuohao_and_del_yuan_kuohao(unicode text) ->list[str]:
     cdef:
         uint k = PyUnicode_KIND(text)
-        pyucs t
+
     if k == 2:
         return _split_by_fangkuohao_and_del_yuan_kuohao(text, PyUnicode_2BYTE_DATA(text), len(text))
     elif k == 1:
@@ -172,7 +172,6 @@ cdef sub_text_del_yuan_kuohao(unicode text, uint start, uint end):
     cdef :
         unicode s=PyUnicode_Substring(text, start, end)
         uint k = PyUnicode_KIND(s)
-        pyucs t
     if k == 2:
         return _text_del_yuan_kuohao(s, PyUnicode_2BYTE_DATA(s))
     elif k == 1:
@@ -318,7 +317,6 @@ cdef sub_string_and_del_xiahuaxian_and_del_hh(unicode text, uint start, uint end
     cdef :
         unicode s=PyUnicode_Substring(text, start, end)
         uint k = PyUnicode_KIND(s)
-        pyucs t
     if k == 2:
         _sub_string_and_del_xiahuaxian_and_del_hh( PyUnicode_2BYTE_DATA(s), len(s))
     elif k == 1:
@@ -379,8 +377,7 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
         str suojin_text=''
         pyucs c
         list ll=[], lll=[]
-        object lts, lte
-    lts=lte=1
+        object lts=1, lte=1
     while(i<l):
         #print('cut line 0', i, l, line_text)
         c=t[i]
@@ -396,10 +393,10 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
         if c!=dyh and c!=syh:
             pass
         else:
-            print('before yh', i, l, line_text)
+            #print('before yh', i, l, line_text)
             ii=find_yh_str(t, i+1, l, c, &line_text)
-            print('after yh', ii, l, line_text)
-            print(PyUnicode_Substring(text, i, ii))
+            #print('after yh', ii, l, line_text)
+            #print(PyUnicode_Substring(text, i, ii))
             i=ii
             continue
         #
