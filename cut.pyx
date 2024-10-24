@@ -260,7 +260,7 @@ cdef uint break_kongbai( pyucs* t, uint i, uint l):
 none_str=''
 cdef _cut_douhao_and_strip(unicode text, pyucs* t, uint l, ):
     cdef :
-        uint _=0, i=0, start=0, end
+        uint _=0, i=0, start=0, end, ii
         list ll=[]
     while (i < l):
         #跳过一段连续空白
@@ -396,7 +396,11 @@ cdef list _cut_line(unicode text, pyucs* t, uint l):
         if c!=dyh and c!=syh:
             pass
         else:
-            i=find_yh_str(t, i+1, l, c, &line_text)
+            print('before yh', i, l, line_text)
+            ii=find_yh_str(t, i+1, l, c, &line_text)
+            print('after yh', ii, l, line_text)
+            print(PyUnicode_Substring(text, i, ii))
+            i=ii
             continue
         #
         if c!=jinghao:
@@ -576,6 +580,11 @@ cdef uint find_no_multi_line_kuohao_str(pyucs* t, uint i, uint l, pyucs left_yh,
             return i + 1
         else:
             line_text_try_add_1(c, line_text)
+            if t[i - 2] == xhx:  #\\'
+                return i+1
+            else:
+                pass
+
         i+=1
     return l
 
