@@ -149,9 +149,9 @@ class Func(M):
         return set(self.vars).union(set(self.c_declare_vars.keys()))
 
 class FuncSignature(M):
-    __slots__ = ('name', 'return_type', 'args_text', 'suffix_text', 'nogil')
-    def __init__(self, name:str, return_type: str, args_text: str, suffix_text:str):
+    def __init__(self, name:str, return_type: str, args_text: str, suffix_text:str, text):
         self.name, self.return_type, self.args_text, self.suffix_text = name, return_type, args_text, suffix_text
+        self.text = text.replace('\n','')
         if nogil_.search(suffix_text):
             self.nogil=True
         else:
@@ -339,32 +339,34 @@ class FinalCtype(M):
             return var_name
         else:
             if self.ptr_levels:
-                if not self.type is FuncSignature: #不是函数指针
+                if not isinstance(self.type, FuncSignature) : #不是函数指针
                     if isinstance(self.type, tuple):#内置类型指针
                         type_name=self.type[0]
+                        type_name_text=' '.join(self.type)
                         assert isinstance(type_name, str)
                         if not type_name=='void' and not type_name=='Py_buffer': #已知类型指针
                             show_base_type_func_name:str = model.show_func_names[self.type]
                             base_type_name = ' '.join(self.type)
-                            return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}))'
+                            return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}), "{type_name_text}")'
                         else: #void指针
                             show_base_type_func_name: str = model.show_no_define_type_func_name
-                            return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof(void*))'
+                            return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof(void*), "{type_name_text}")'
                     else: #Struct or Union or Enum or Fused
                         if not isinstance(self.type , Fused):
                             base_type_name = self.type.name
                             assert isinstance(base_type_name, str)
                             if self.type.defined:
                                 show_base_type_func_name: str = model.show_func_names[(base_type_name,)]
-                                return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}))'
+                                return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof({base_type_name}), "{base_type_name}")'
                             else:
                                 show_base_type_func_name: str = model.show_no_define_type_func_name
-                                return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{model.show_no_define_type_func_name}, sizeof(void*))'
+                                return f'{model.ptr_class_name}().set(<volatile void**>&{var_name}, {self.ptr_levels}, &{model.show_no_define_type_func_name}, sizeof(void*), "{base_type_name}")'
                         else: # fused指针
-                            type_name = (self.type.name,)
+                            base_type_name = self.type.name
+                            type_name = (base_type_name,)
                             show_base_type_func_name: str = model.fused_ptr_show_func_names[type_name]
                             end_item = '[0]'*len(self.ptr_levels)
-                            return f'{show_base_type_func_name}(<volatile void**>&{var_name}, {self.ptr_levels}, {var_name}{end_item})'
+                            return f'{show_base_type_func_name}(<volatile void**>&{var_name}, {self.ptr_levels}, {var_name}{end_item}, "{base_type_name}")'
                         #
 
                 else: #函数指针
@@ -372,16 +374,16 @@ class FinalCtype(M):
                         return f'{model.show_func_ptr_name}({var_name})'
                     else:
                         show_base_type_func_name:str = model.show_func_ptr_name
-                        return f'{model.ptr_class_name}().set(<volatile const void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof(void*))'
+                        return f'{model.ptr_class_name}().set(<volatile const void**>&{var_name}, {self.ptr_levels}, &{show_base_type_func_name}, sizeof(void*), "{self.type.text}")'
             else: #是变量不是指针
                 if not self.type is FuncSignature: #
                     if isinstance(self.type, tuple):  # 内置类型
                         type_name = self.type[0]
                         assert isinstance(type_name, str)
-                        if not type_name == 'void' and not type_name == 'Py_buffer':  # 已知类型指针
+                        if not type_name == 'void' and not type_name == 'Py_buffer':  # 有效类型
                             show_func_name: str = model.show_func_names[self.type]
                             return f'{show_func_name}(&{var_name})'
-                        else:  # void指针
+                        else:  # 无效类型
                             raise AssertionError
                     else: #Struct or Union or Enum or Fused
                         type_name = (self.type.name,)
@@ -391,7 +393,7 @@ class FinalCtype(M):
                         else: #fused 变量
                             return f'{show_func_name}(&{var_name}, {var_name})'
                 else: # 省略了*的函数指针
-                    return f'{model.show_func_ptr_name}(<volatile const void*>&{var_name})'
+                    return f'{model.show_func_ptr_name}(<volatile const void*>&{var_name}, "{self.type.text}")'
 
 PyObject=('PyObject',)
 class Model(M):
@@ -474,7 +476,7 @@ class Model(M):
             assert not( any(t.modifiers) or t.ptr_levels)
             return FinalCtype(object, None, None)
         elif symbol in self.ctypedef_func_ptr:
-            return FinalCtype(FuncSignature, t.modifiers, t.ptr_levels)
+            return FinalCtype(self.ctypedef_func_ptr[symbol], t.modifiers, t.ptr_levels)
         else:
             raise KeyError
 
@@ -514,7 +516,7 @@ class Model(M):
                 return final_t
             #
             elif name in self.all_ctypedef_func_ptr:
-                return FinalCtype(FuncSignature, tt.modifiers, tt.ptr_levels)
+                return FinalCtype(self.all_ctypedef_func_ptr[name], tt.modifiers, tt.ptr_levels)
             else:
                 raise AssertionError
 
@@ -777,7 +779,7 @@ class Model(M):
                         enter_text=get_enter_text(var_names,code_content, enter_sj_text, start_lineno, end_lineno )
                         enter_lines.append(enter_text)
                         #
-                        print('func',i, block, code_line, start_enter_text, enter_text,'\n--------')
+                        pass#print('func',i, block, code_line, start_enter_text, enter_text,'\n--------')
                         i = offset
                         continue
                 elif isinstance(block, Model):
@@ -826,7 +828,7 @@ class Model(M):
                         i=offset
                         enter_sj_text='      '
                         enter_func_prefix=f'{block.name}_'
-                        print('class first', i, sj_len,code_line,'\n--------')
+                        pass#print('class first', i, sj_len,code_line,'\n--------')
                         cls_min_sj_text = next_code_line[:sj_len]
                         continue
                 else:
@@ -850,9 +852,9 @@ class Model(M):
                     if sj_len==0:
                         pass
                     else:
-                        print('同行')
-                        print(lines[i])
-                        print(lines[i - 1])
+                        pass#print('同行')
+                        pass#print(lines[i])
+                        pass#print(lines[i - 1])
                         assert zhushi.match(code_line)
                 else:
                     raise AssertionError
@@ -869,10 +871,9 @@ class Model(M):
                     if cur_func:
                         enter_text = get_enter_text(var_names, code_line, enter_sj_text, start_lineno, end_lineno)
                         enter_lines.append(enter_text)
-                        print('show vars', i, block, code_line, show_text, enter_text, start_lineno, end_lineno, '\n--------')
+                        pass#print('show vars', i, block, code_line, show_text, enter_text, start_lineno, end_lineno, '\n--------')
                     else:
-                        print('show vars', i, block, code_line, show_text, 'no enter_text', start_lineno, end_lineno,
-                              '\n--------')
+                        pass#print('show vars', i, block, code_line, show_text, 'no enter_text', start_lineno, end_lineno,'\n--------')
                     i+=1
                     continue
                 elif flag == _cdef:  # cdef: 块 要改写成一个个cdef ……行
@@ -899,16 +900,16 @@ class Model(M):
                                         #
                                         enter_text = get_enter_text(var_names, new_line, enter_sj_text, start_lineno, end_lineno)
                                         enter_lines.append(enter_text)
-                                        print('cdef while', i, code_line, enter_text, start_lineno, end_lineno, '\n--------')
+                                        pass#print('cdef while', i, code_line, enter_text, start_lineno, end_lineno, '\n--------')
                                     i += 1
                                 else:
                                     break
-                                print('cdef', i, block, enter_text,'\n--------')
+                                pass#print('cdef', i, block, enter_text,'\n--------')
                             else:
                                 break
                     else:
                         assert isinstance(block, CClass)
-                        print('class cdef', i)
+                        pass#print('class cdef', i)
                         i+=1
                         continue
                 elif isinstance(flag, tuple):
@@ -929,7 +930,7 @@ class Model(M):
                                 assert next_start_lineno == start_lineno
                                 ll=dbg_lines[-1]
                                 ll[0].append(code_line)
-                                print('zhushi,1', code_line)
+                                pass#print('zhushi,1', code_line)
                                 #pre_start_lineno=next_start_lineno
                                 i+=1
                         else:
@@ -944,7 +945,7 @@ class Model(M):
                                                             model_vars_names, print_model_name, start_lineno, print_flag)
                     else:
                         show_text=''
-                    print('for_except_with', i, pre_code_line, show_text, start_lineno, end_lineno, '\n--------')
+                    pass#print('for_except_with', i, pre_code_line, show_text, start_lineno, end_lineno, '\n--------')
                     pre_start_lineno=dbg_lines_append(dbg_lines, '', show_text, pre_start_lineno, start_lineno)
                     #
                     enter_text = get_enter_text(var_names, code_line, enter_sj_text, start_lineno, end_lineno)
@@ -956,7 +957,7 @@ class Model(M):
                     gil_stack.append((_nogil, nogil_text, sj_len))
                     pre_start_lineno = dbg_lines_append(dbg_lines, code_line, '', pre_start_lineno, start_lineno )
                     enter_lines.append(('\n', f'# {code_line}'))
-                    print(_nogil, i)
+                    pass#print(_nogil, i)
                     i += 1
                     continue
                 elif flag == _gil:
@@ -964,19 +965,19 @@ class Model(M):
                     gil_stack.append((_gil, '', sj_len))
                     pre_start_lineno = dbg_lines_append(dbg_lines, code_line, '', pre_start_lineno, start_lineno)
                     enter_lines.append(('\n', f'# {code_line}'))
-                    print(_gil, i)
+                    pass#print(_gil, i)
                     i += 1
                     continue
                 else:
                     pre_start_lineno = dbg_lines_append(dbg_lines, code_line, '', pre_start_lineno, start_lineno)
                     enter_lines.append(('', f'# {code_line}'))
-                    print('other', i, code_line, start_lineno, end_lineno)
+                    pass#print('other', i, code_line, start_lineno, end_lineno)
                     i += 1
                     continue
             else:
                 #enter_lines.append(('\n', '#'))
                 pre_start_lineno = dbg_lines_append(dbg_lines, '\n', '', pre_start_lineno, start_lineno )
-                print('not line', i)
+                pass#print('not line', i)
                 i += 1
                 continue
 
@@ -1023,7 +1024,7 @@ class Model(M):
             show_vars = ', '.join(fts)
             if cur_func:
                 new_vars = [f"('{x[0]}',{x[1]})" for x in zip(var_names, fts)]
-                tt = '[' + ', '.join(new_vars) + ']'
+                tt = '([' + ', '.join(new_vars) + f'], {start_lineno})'
                 show_text = f'{sj_text}{py_enter_name}.send({tt})\n'
             else:
                 assert py_enter_name is None
@@ -1032,7 +1033,7 @@ class Model(M):
                 show_text = f'{sj_text}{names} = {show_vars}\n'
             if print_flag:
                 print_text = ', '.join(fts)
-                show_text += f'{sj_text}print("{print_model_name} line {start_lineno}:", {print_text})\n'
+                show_text += f'{sj_text}pass#print("{print_model_name} line {start_lineno}:", {print_text})\n'
             return show_text
         else:
             return ''
@@ -1054,8 +1055,11 @@ cdef class {self.ptr_class_name}:
     cdef readonly address
     cdef readonly len
     cdef readonly unsigned int itemsize
+    cdef readonly str type_name
     cdef {self.show_type_ptr_name}* func
     def __init__(self):pass
+    def __repr__(self):
+        return self.type_name + '*'*len(self.ptr_levels) + 'at' + hex(self.address)
     def __getattr__(self, i: int):
         cdef :
             char* ptr
@@ -1063,28 +1067,31 @@ cdef class {self.ptr_class_name}:
         if isinstance(i, int):
             if self.len:
                 if i< self.len:
-                    if len(self.ptr_levels)==1:
-                        offset = self.itemsize*<unsigned int>i
-                        return self.func(self.ptr + offset)
-                    else:
-                        offset = self.itemsize*<unsigned int>i
-                        assert len(self.ptr_levels)>1
-                        ptr=self.ptr + offset
-                        return Ptr().set(<volatile const void**>ptr, self.ptr_levels[:-1], self.func, self.itemsize)
+                    pass
                 else:
                     raise IndexError
             else:
-                raise ValueError("请先调用set_len方法设置元素个数/please call set_len method set item count")
+                pass
         else:
             raise KeyError
-
+        #
+        if len(self.ptr_levels)==1:
+            offset = self.itemsize*<unsigned int>i
+            return self.func(self.ptr + offset)
+        else:
+            offset = self.itemsize*<unsigned int>i
+            assert len(self.ptr_levels)>1
+            ptr=self.ptr + offset
+            return {self.ptr_class_name}().set(<volatile const void**>ptr, self.ptr_levels[:-1], self.func, self.itemsize, self.type_name)
+            
     def set_len(self, l: int):
         if isinstance(l, int):
             self.len=l
         else:
             raise TypeError
 
-    cdef set(self, volatile const void** ptr, list ptr_levels, {self.show_type_ptr_name}* func, unsigned int itemsize ):
+    cdef set(self, volatile const void** ptr, list ptr_levels, {self.show_type_ptr_name}* func, unsigned int itemsize, str type_name ):
+        self.type_name=type_name
         self.ptr=<char*>ptr[0]
         self.address=<unsigned int>ptr
         self.len  = ptr_levels[-1]
@@ -1203,7 +1210,7 @@ def get_enter_text(var_names, code_line:str, enter_sj_text, start_lineno:int, en
     #zhushi= code_content.replace('\n','')
     #text = (f'{enter_sj_text}{names_text} = yield None',f'#{code_line}')
     zhushi = code_line.replace('\\\n','')
-    text=(f'\n{enter_sj_text}vs=yield None; vars.update(vs)',f'#{zhushi}')
+    text=(f'\n{enter_sj_text}vs, lineno=yield None; vars.update(vs)',f'#{zhushi}')
     return text
 
 
@@ -1270,7 +1277,7 @@ cdef class {class_name}:
     def set_from_object(self, obj):
         self.ptr[0]=<{type_name}>obj
     @property
-    def ptr(self):
+    def address(self):
         return <unsigned int>self.ptr
     @property
     def v(self):
@@ -1278,7 +1285,7 @@ cdef class {class_name}:
 '''
     text +='''
     def __repr__(self):
-        return f"address in hex({self.ptr[0]}), value is {self.v}"
+        return f"{self.v} at {hex(self.address)}"
         '''
     text +=f'''
     
@@ -1374,7 +1381,7 @@ def call_fused_choose_base_type_show_func( type_name:str, func_name:str, parts, 
     text, d_words = get_fused_ctypedef_one_word(parts, model.all_symbol)
     text += f'''
     
-cdef {func_name}(volatile const void** ptr, ptr_levels, {type_name} _):'''
+cdef {func_name}(volatile const void** ptr, ptr_levels, {type_name} _, str type_name):'''
     for part in parts:
         try:
             one_word = d_words[part]
@@ -1383,7 +1390,7 @@ cdef {func_name}(volatile const void** ptr, ptr_levels, {type_name} _):'''
         final_t :FinalCtype=model.all_appeared_type_final_type[part]#show变量指针
         show_base_type_func_name = model.show_func_names[final_t.type]
         # cdef set(self, volatile const void** ptr, list ptr_levels, show_func* func, unsigned int itemsize )
-        text += f'\n    if {type_name}=={one_word}: return {model.ptr_class_name}().set(ptr, ptr_levels, &{show_base_type_func_name}, sizeof(ptr))'
+        text += f'\n    if {type_name}=={one_word}: return {model.ptr_class_name}().set(ptr, ptr_levels, &{show_base_type_func_name}, sizeof(ptr), type_name)'
     text += '\n    raise AssertionError'
     return text
 #-----------------------------------------------------------------------------------------------------------------------
@@ -1502,7 +1509,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
     t0=time.time()
     pre_i, pre_enter = 0, None
     while (i<l):
-        #print(i)
+        #pass#print(i)
         line = code_lines[i]
         code_line, suojin_len, start_lineno, end_lineno = line
         if suojin_len==0:
@@ -1690,7 +1697,7 @@ def enter_model_block( code_lines: iter,  model:Model )->int:
             if not code_line or all_kongbai.fullmatch(code_line):
                 pass
             else:
-                print(f'该行认为无需处理， 物理行开始和结束[{start_lineno},{end_lineno}), 内容：{code_line}，逻辑行号:{i}' )
+                pass#print(f'该行认为无需处理， 物理行开始和结束[{start_lineno},{end_lineno}), 内容：{code_line}，逻辑行号:{i}' )
             i+=1
         else:
             if not check_code_line_have_content(code_line):
@@ -1719,7 +1726,7 @@ def enter_func_block( code_lines: iter, sj_len: int, start_i: int, l: int, lines
     t0 = time.time()
     while(i<l):
         line=code_lines[i]
-        #print(i, line)
+        #pass#print(i, line)
         code_line, suojin_len, _, __ = line
         if suojin_len>sj_len:
             t1 = time.time()
@@ -1769,7 +1776,7 @@ def enter_class_block( code_lines: iter, sj_len: int, start_i: int, l: int, line
     t0 = time.time()
     pre_i, pre_enter=0, None
     while (i < l):
-        #print(i)
+        #pass#print(i)
         line = code_lines[i]
         code_line, suojin_len, start_lineno, end_lineno = line
         t1 = time.time()
@@ -1932,7 +1939,7 @@ def enter_extern_block(  code_lines: iter, sj_len: int,  start_i: int, l: int, l
     i=start_i
     t0 = time.time()
     while(i<l):
-        #print(i)
+        #pass#print(i)
         t1 = time.time()
         if t1 - t0 > timeout: raise TimeoutError
         line=code_lines[i]
@@ -2041,7 +2048,7 @@ def get_ctypedef_func0_signature(rr: re.Match, type_symbol_table: dict):
     return_type, name = get_func_return_type_and_name(type_and_name_text, modifier)
     name = (name.strip(),)
     if return_type is object: assert not modifier
-    t=FuncSignature(name, return_type, args_text, suffix_text)
+    t=FuncSignature(name, return_type, args_text, suffix_text, rr.group())
     type_symbol_table[name]=t
     #
 get_extern_func_signature=get_ctypedef_func0_signature
@@ -2054,30 +2061,15 @@ def get_ctypedef_func1_signature(rr: re.Match, type_symbol_table: dict):
     return_type, name, _ = get_1_fangkuohao(words_xinghaocount_xinghaos_fangkuohao_stat_s)
     #
     name = (name_text.strip(),)
-    t=FuncSignature(name, return_type, args_text, suffix_text)
+    t=FuncSignature(name, return_type, args_text, suffix_text, rr.group())
     #
     type_symbol_table[name]=t
 
-def get_cdef_func_signature(rr: re.Match, parent_vars_symbol_table: dict, self_vars_symbol_table: dict):
-    modifier_text, type_and_name_text, args_text, suffix_text=rr.groups()
-    get_func(modifier_text, type_and_name_text, args_text, suffix_text, parent_vars_symbol_table)
-
-def get_func(modifier_text, type_and_name_text, args_text, suffix_text, parent_vars_symbol_table: dict, self_vars_symbol_table: dict):
-    modifier = tuple(sorted(words_.findall(modifier_text))) if modifier_text else tuple()
-    return_type, func_name = get_func_return_type_and_name(type_and_name_text, modifier)
-    #print(modifier_text, type_and_name_text, args_text, suffix_text)
-    args_text_ = cut.cut_douhao_and_strip(args_text)
-    t = FuncSignature(func_name, return_type, args_text, suffix_text)
-    parent_vars_symbol_table[func_name]=t
-    for arg_text in args_text_:
-        tt, var_name, _ = get_type_and_name(arg_text)
-        if var_name: #不是(a,b,*,c,d)中的*
-            self_vars_symbol_table[var_name]=tt
 
 strip_type_zhushi=re.compile('')
 _none, _not ='None', 'not'
 def get_cdef_func_args(args_text: str, symbol_table:dict): #注意ctypedef的不能用这个
-    #print(args_text, '////')
+    #pass#print(args_text, '////')
     type_and_names=cut.cut_douhao_and_strip(args_text)
     for type_and_name_text in type_and_names:
         r=left_value_fuzhi_express.match(type_and_name_text)
@@ -2418,10 +2410,9 @@ def rewrite_code(pyx_path:str, output_folder:str, print_flag=False):
     model.rewrite_code_to_show(output_folder, print_flag)
 
 if __name__ == '__main__':
-    folder='D:/xrdb'
     #rewrite_code(r"D:\xrdb\debugger\test_other\loop.pyx", r'D:\xrdb\debugger\test_other')
-    rewrite_code(r"D:\cython-tools\cut.pyx", 'D:/cython-tools', False)
-    rewrite_code('D:/xrdb/graph.pyx', 'D:/xrdb/debugger')
+    rewrite_code(r"D:\cython-tools\cut.pyx", 'D:/cython-tools', True)
+    #rewrite_code('D:/xrdb/graph.pyx', 'D:/xrdb/debugger')
 
 
 
