@@ -4,7 +4,7 @@ import time
 
 import pyximport
 pyximport.install(language_level=3)
-import cut
+#import cut
 import cut_dbg as cut
 
 import warnings, copy
@@ -708,8 +708,8 @@ class Model(M):
         dbg_model_name: str = get_name(model.name, symbols)
         #
         enter_symbols = set(model.all_funcs.keys()).union(model.classes.keys())
-        gvn = get_name('global_vars', enter_symbols)
-        global_vars_names = f'{dbg_model_name}.{gvn}'
+        gvn = get_name('model_vars', enter_symbols)
+        model_vars_names = f'{dbg_model_name}.{gvn}'
         enter_lines = [(f'{gvn}=dict()\n', '#')]
         #
         py_enter_name: str = None
@@ -767,7 +767,7 @@ class Model(M):
 
                         var_names = block.args.keys()
                         show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, self,
-                                                            global_vars_names, print_model_name, start_lineno, print_flag)
+                                                            model_vars_names, print_model_name, start_lineno, print_flag)
                         dbg_lines_append(dbg_lines, '', show_text, pre_start_lineno, start_lineno)
                         #
                         est = enter_sj_text[:-2]
@@ -863,7 +863,7 @@ class Model(M):
                     assert cur_func or isinstance(block, Model)
 
                     show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, self,
-                                                        global_vars_names, print_model_name, start_lineno, print_flag)
+                                                        model_vars_names, print_model_name, start_lineno, print_flag)
                     pre_start_lineno = dbg_lines_append(dbg_lines, code_line, show_text, pre_start_lineno, start_lineno)
                     #
                     if cur_func:
@@ -893,7 +893,7 @@ class Model(M):
                                         new_line = f'{sj_kongbai_text}cdef {code_line[sj_len:]}'
                                         sj_text = f'{sj_kongbai_text}{gil_text}'
                                         show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, self,
-                                                                            global_vars_names, print_model_name, start_lineno, print_flag)
+                                                                            model_vars_names, print_model_name, start_lineno, print_flag)
                                         pre_start_lineno = dbg_lines_append(dbg_lines, new_line, show_text, pre_start_lineno,
                                                                             start_lineno)
                                         #
@@ -941,7 +941,7 @@ class Model(M):
                     if var_names:
                         #
                         show_text = self.get_show_vars_text(var_names, sj_text, py_enter_name, cur_func, self,
-                                                            global_vars_names, print_model_name, start_lineno, print_flag)
+                                                            model_vars_names, print_model_name, start_lineno, print_flag)
                     else:
                         show_text=''
                     print('for_except_with', i, pre_code_line, show_text, start_lineno, end_lineno, '\n--------')
@@ -1012,27 +1012,30 @@ class Model(M):
         self.get_model_dbg_code(self, folder, dbg_file, print_flag)
         dbg_file.write(shower_text)
 
-
-    def get_show_vars_text(self, var_names: list[str], sj_text:str, py_enter_name: str, cur_func:Func, model:Model, global_vars_name:str, print_model_name:str, start_lineno:int, print_flag:bool=False,  ):
-        fts = []
-        for var_name in var_names:
-            final_t: FinalCtype = get_var_final_type(var_name, cur_func, model)
-            tx = final_t.get_call_show_text(var_name, self)
-            fts.append(tx)
-        show_vars = ', '.join(fts)
-        if cur_func:
-            new_vars = [f"('{x[0]}',{x[1]})" for x in zip(var_names, fts)]
-            tt = '[' + ', '.join(new_vars) + ']'
-            show_text = f'{sj_text}{py_enter_name}.send({tt})\n'
+    def get_show_vars_text(self, var_names: list[str], sj_text:str, py_enter_name: str, cur_func:Func, model:Model, model_vars_name:str, print_model_name:str, start_lineno:int, print_flag:bool=False,  ):
+        if var_names:
+            fts = []
+            for var_name in var_names:
+                #assert var_name and not all_kongbai.fullmatch(var_name)
+                final_t: FinalCtype = get_var_final_type(var_name, cur_func, model)
+                tx = final_t.get_call_show_text(var_name, self)
+                fts.append(tx)
+            show_vars = ', '.join(fts)
+            if cur_func:
+                new_vars = [f"('{x[0]}',{x[1]})" for x in zip(var_names, fts)]
+                tt = '[' + ', '.join(new_vars) + ']'
+                show_text = f'{sj_text}{py_enter_name}.send({tt})\n'
+            else:
+                assert py_enter_name is None
+                new_vars= [f"{model_vars_name}['{x}']" for x in var_names]
+                names = ', '.join(new_vars)
+                show_text = f'{sj_text}{names} = {show_vars}\n'
+            if print_flag:
+                print_text = ', '.join(fts)
+                show_text += f'{sj_text}print("{print_model_name} line {start_lineno}:", {print_text})\n'
+            return show_text
         else:
-            assert py_enter_name is None
-            new_vars= [f"{global_vars_name}['{x}']" for x in var_names]
-            names = ', '.join(new_vars)
-            show_text = f'{sj_text}{names} = {show_vars}\n'
-        if print_flag:
-            print_text = ', '.join(fts)
-            show_text += f'{sj_text}print("{print_model_name} line {start_lineno}:", {print_text})\n'
-        return show_text
+            return ''
     def get_show_text(self):
         symbols = self.get_all_symbol()
         self.ptr_class_name = get_name('Ptr', symbols)
@@ -1131,32 +1134,32 @@ cdef class {self.ptr_class_name}:
                 else:
                     class_name = get_name(tp, symbols)
                     showed_class[tp] = class_name
-                if isinstance(t, Fused):
-                    type_name = t.name
-                    func_name =show_func_names[(type_name,)]
-                    parts = t.define_struct_union_enum_fuseds
-                    ptr_func_name = get_name(f'show_{type_name}_ptr', symbols)
-                    tt = get_fused_show_text(type_name, func_name, parts, self)
-                    ttt = call_fused_choose_base_type_show_func(type_name, ptr_func_name, parts, self)
-                    text += tt+ttt
-                    fused_ptr_show_func_names[(type_name,)] = ptr_func_name
-                elif isinstance(t, Enum):
-                    type_name = t.name
-                    func_name = show_func_names[(type_name,)]
-                    #class_name = get_name(type_name.title(), symbols)
-                    parts = t.vars
-                    tt=get_enum_show_text(class_name, type_name, func_name, parts)
-                    text += tt
-                elif isinstance(t,Struct) or isinstance(t, Union): # Struct or Union
-                    type_name = t.name
-                    func_name = show_func_names[(type_name,)]
-                    #class_name = get_name(type_name, symbols)
-                    parts = t.var_mapping_type.items()
-                    if parts:
-                        tt=get_struct_or_union_show_text(class_name, type_name, func_name, parts, self.all_appeared_type_final_type, self)
+                    if isinstance(t, Fused):
+                        type_name = t.name
+                        func_name =show_func_names[(type_name,)]
+                        parts = t.define_struct_union_enum_fuseds
+                        ptr_func_name = get_name(f'show_{type_name}_ptr', symbols)
+                        tt = get_fused_show_text(type_name, func_name, parts, self)
+                        ttt = call_fused_choose_base_type_show_func(type_name, ptr_func_name, parts, self)
+                        text += tt+ttt
+                        fused_ptr_show_func_names[(type_name,)] = ptr_func_name
+                    elif isinstance(t, Enum):
+                        type_name = t.name
+                        func_name = show_func_names[(type_name,)]
+                        #class_name = get_name(type_name.title(), symbols)
+                        parts = t.vars
+                        tt=get_enum_show_text(class_name, type_name, func_name, parts)
                         text += tt
-                    else:
-                        assert final_t.ptr_levels
+                    elif isinstance(t,Struct) or isinstance(t, Union): # Struct or Union
+                        type_name = t.name
+                        func_name = show_func_names[(type_name,)]
+                        #class_name = get_name(type_name, symbols)
+                        parts = t.var_mapping_type.items()
+                        if parts:
+                            tt=get_struct_or_union_show_text(class_name, type_name, func_name, parts, self.all_appeared_type_final_type, self)
+                            text += tt
+                        else:
+                            assert final_t.ptr_levels
             else:
                 continue
             #
@@ -2416,8 +2419,10 @@ def rewrite_code(pyx_path:str, output_folder:str, print_flag=False):
 
 if __name__ == '__main__':
     folder='D:/xrdb'
-    #rewrite_code(r"D:\cython-tools\cut.pyx", 'D:/cython-tools', False)
+    #rewrite_code(r"D:\xrdb\debugger\test_other\loop.pyx", r'D:\xrdb\debugger\test_other')
+    rewrite_code(r"D:\cython-tools\cut.pyx", 'D:/cython-tools', False)
     rewrite_code('D:/xrdb/graph.pyx', 'D:/xrdb/debugger')
+
 
 
 
